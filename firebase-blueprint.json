@@ -1,0 +1,92 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System users including Admins, Sales Managers (SM), CPQL Partners, and Vendors.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "sm", "partner", "vendor"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Top-level hierarchy for organizing leads and partners.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "location": { "type": "string" },
+        "price": { "type": "string" },
+        "configuration": { "type": "string" },
+        "possession": { "type": "string" },
+        "propertyType": { "type": "string", "enum": ["residential", "commercial", "plots"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "propertyType"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Lead details dropped by partners and managed by SMs.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "enquiryId": { "type": "string" },
+        "projectId": { "type": "string" },
+        "partnerId": { "type": "string", "description": "UID of the partner who dropped the lead" },
+        "smId": { "type": "string", "description": "UID of the assigned Sales Manager" },
+        "customerName": { "type": "string" },
+        "customerPhone": { "type": "string" },
+        "budget": { "type": "number" },
+        "possession": { "type": "string" },
+        "status": { "type": "string", "enum": ["new", "assigned", "contacted", "site_visit", "converted", "lost"] },
+        "smFeedback": { "type": "string" },
+        "partnerFeedback": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["enquiryId", "projectId", "partnerId", "status"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Tasks related to a specific lead.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "leadId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "dueDate": { "type": "string", "format": "date-time" },
+        "assignedTo": { "type": "string", "description": "UID of the user assigned to the task" },
+        "createdBy": { "type": "string", "description": "UID of the user who created the task" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["leadId", "title", "assignedTo"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and roles"
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Project definitions"
+    },
+    "/leads/{leadId}": {
+      "schema": "Lead",
+      "description": "Lead records"
+    },
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Task records"
+    }
+  }
+}

@@ -1,0 +1,161 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required)
+    //   - role: string (required, enum: ['admin', 'sm', 'partner', 'vendor', 'vendor_manager', 'vendor_editor', 'vendor_viewer'])
+    //   - displayName: string
+    //   - vendorCompanyId: string (optional)
+    //
+    // Collection: projects
+    // Fields:
+    //   - name: string (required)
+    //   - description: string
+    //   - location: string
+    //   - price: string
+    //   - configuration: string
+    //   - possession: string
+    //   - propertyType: string (enum: ['residential', 'commercial', 'plots'])
+    //
+    // Collection: leads
+    // Fields:
+    //   - enquiryId: string (required)
+    //   - projectId: string (required)
+    //   - partnerId: string (required)
+    //   - smId: string
+    //   - status: string (required)
+    //   - smFeedback: string
+    //   - partnerFeedback: list (strings)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      let path = /databases/$(database)/documents/users/$(request.auth.uid);
+      return exists(path) ? get(path).data : {"role": "none"};
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (getUserData().role == 'admin' || 
+         (request.auth.token.email == "ameyshinde2391@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isSM() {
+      return isAuthenticated() && getUserData().role == 'sm';
+    }
+
+    function isPartner() {
+      return isAuthenticated() && getUserData().role == 'partner';
+    }
+
+    function isVendor() {
+      return isAuthenticated() && getUserData().role in ['vendor', 'vendor_manager', 'vendor_editor', 'vendor_viewer'];
+    }
+
+    function isVendorManager() {
+      return isAuthenticated() && getUserData().role in ['vendor', 'vendor_manager'];
+    }
+
+    function isVendorEditor() {
+      return isAuthenticated() && getUserData().role in ['vendor', 'vendor_manager', 'vendor_editor'];
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.role in ['admin', 'sm', 'partner', 'vendor', 'vendor_manager', 'vendor_editor', 'vendor_viewer'] &&
+             data.uid is string &&
+             data.email is string;
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'propertyType']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.propertyType in ['residential', 'commercial', 'plots'];
+    }
+
+    function isValidLead(data) {
+      return data.keys().hasAll(['enquiryId', 'projectId', 'partnerId', 'status']) &&
+             data.enquiryId is string &&
+             data.projectId is string &&
+             data.partnerId is string &&
+             data.status is string;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll(['leadId', 'title', 'assignedTo', 'createdBy']) &&
+             data.leadId is string &&
+             data.title is string && data.title.size() > 0 &&
+             data.assignedTo is string &&
+             data.createdBy is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidUser(request.resource.data);
+      allow update: if isAdmin() && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /projects/{projectId} {
+      allow read: if isAuthenticated();
+      allow create: if isAdmin() && isValidProject(request.resource.data);
+      allow update: if isAdmin() && isValidProject(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /leads/{leadId} {
+      allow read: if isAuthenticated();
+      
+      allow create: if (isPartner() || isSM() || isAdmin() || isVendorEditor()) && 
+                      isValidLead(request.resource.data) &&
+                      (isPartner() ? request.resource.data.partnerId == request.auth.uid : true) &&
+                      (isVendorEditor() ? (request.resource.data.partnerId == request.auth.uid || request.resource.data.partnerId == getUserData().get('vendorCompanyId', '')) : true);
+      
+      allow update: if isAuthenticated() && isValidLead(request.resource.data) && (
+        isAdmin() ||
+        (isSM() && request.resource.data.partnerId == resource.data.partnerId) ||
+        (isPartner() && request.auth.uid == resource.data.partnerId) ||
+        (isVendorEditor() && (request.auth.uid == resource.data.partnerId || getUserData().get('vendorCompanyId', '') == resource.data.partnerId))
+      );
+      
+      allow delete: if isAdmin() || (isVendorManager() && (request.auth.uid == resource.data.partnerId || getUserData().get('vendorCompanyId', '') == resource.data.partnerId));
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidTask(request.resource.data);
+      allow update: if isAuthenticated() && isValidTask(request.resource.data) && (
+        isAdmin() || request.auth.uid == resource.data.assignedTo || request.auth.uid == resource.data.createdBy
+      );
+      allow delete: if isAdmin();
+    }
+  }
+}

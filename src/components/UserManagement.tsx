@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../AuthContext';
-import { Plus, UserPlus, Shield, Mail, Trash2, Upload } from 'lucide-react';
+import { Plus, UserPlus, Shield, Mail, Trash2, Upload, Edit2 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { useRef } from 'react';
@@ -11,7 +11,8 @@ export default function UserManagement() {
   const { isAdmin } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ email: '', displayName: '', role: 'partner' as any, vendorCompanyId: '' });
+  const [newUser, setNewUser] = useState({ email: '', displayName: '', role: 'partner' as any, vendorCompanyId: '', companyName: '' });
+  const [editUser, setEditUser] = useState<any>(null);
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -36,9 +37,26 @@ export default function UserManagement() {
         createdAt: serverTimestamp()
       });
       setIsModalOpen(false);
-      setNewUser({ email: '', displayName: '', role: 'partner', vendorCompanyId: '' });
+      setNewUser({ email: '', displayName: '', role: 'partner', vendorCompanyId: '', companyName: '' });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'users');
+    }
+  };
+
+  const handleUpdateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editUser) return;
+    try {
+      await updateDoc(doc(db, 'users', editUser.id), {
+        displayName: editUser.displayName,
+        email: editUser.email,
+        role: editUser.role,
+        vendorCompanyId: editUser.vendorCompanyId || '',
+        companyName: editUser.companyName || ''
+      });
+      setEditUser(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${editUser.id}`);
     }
   };
 
@@ -81,6 +99,7 @@ export default function UserManagement() {
         displayName: String(row.displayName),
         role: (row.role || 'partner').toLowerCase(),
         vendorCompanyId: row.vendorCompanyId || '',
+        companyName: row.companyName || '',
         uid: 'pending_' + Math.random().toString(36).substr(2, 9),
         createdAt: serverTimestamp()
       });
@@ -196,18 +215,26 @@ export default function UserManagement() {
                     >
                       <option value="">Select Vendor...</option>
                       {vendors.map(v => (
-                        <option key={v.uid} value={v.uid}>{v.displayName}</option>
+                        <option key={v.uid} value={v.uid}>{v.companyName || v.displayName}</option>
                       ))}
                     </select>
                   )}
                 </td>
                 <td className="px-6 py-4">
-                  <button 
-                    onClick={() => deleteUser(user.id)}
-                    className="text-red-600 hover:text-red-800 transition-colors"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => setEditUser(user)}
+                      className="text-blue-600 hover:text-blue-800 transition-colors"
+                    >
+                      <Edit2 className="w-5 h-5" />
+                    </button>
+                    <button 
+                      onClick={() => deleteUser(user.id)}
+                      className="text-red-600 hover:text-red-800 transition-colors"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -222,7 +249,7 @@ export default function UserManagement() {
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Bulk Upload Users</h2>
             <p className="text-sm text-gray-500 mb-6">
               Upload a CSV or Excel file with columns: <br/>
-              <code className="bg-gray-100 px-1 rounded">email, displayName, role, vendorCompanyId</code>
+              <code className="bg-gray-100 px-1 rounded">email, displayName, role, vendorCompanyId, companyName</code>
             </p>
             
             <div 
@@ -272,6 +299,18 @@ export default function UserManagement() {
                   className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
                 />
               </div>
+              {newUser.role === 'vendor' && (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Company Name / Vendor Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={newUser.companyName}
+                    onChange={(e) => setNewUser({ ...newUser, companyName: e.target.value })}
+                    className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">Email Address</label>
                 <input
@@ -309,7 +348,7 @@ export default function UserManagement() {
                   >
                     <option value="">Select Vendor...</option>
                     {vendors.map(v => (
-                      <option key={v.uid} value={v.uid}>{v.displayName}</option>
+                      <option key={v.uid} value={v.uid}>{v.companyName || v.displayName}</option>
                     ))}
                   </select>
                 </div>
@@ -327,6 +366,95 @@ export default function UserManagement() {
                   className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800"
                 >
                   Create User
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Edit User Modal */}
+      {editUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Edit User</h2>
+            <form onSubmit={handleUpdateUser} className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  value={editUser.displayName}
+                  onChange={(e) => setEditUser({ ...editUser, displayName: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                />
+              </div>
+              {editUser.role === 'vendor' && (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Company Name / Vendor Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={editUser.companyName || ''}
+                    onChange={(e) => setEditUser({ ...editUser, companyName: e.target.value })}
+                    className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Email Address</label>
+                <input
+                  type="email"
+                  required
+                  value={editUser.email}
+                  onChange={(e) => setEditUser({ ...editUser, email: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Role</label>
+                <select
+                  value={editUser.role}
+                  onChange={(e) => setEditUser({ ...editUser, role: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                >
+                  <option value="partner">Partner</option>
+                  <option value="vendor">Vendor (Main)</option>
+                  <option value="vendor_manager">Vendor Manager</option>
+                  <option value="vendor_editor">Vendor Editor</option>
+                  <option value="vendor_viewer">Vendor Viewer</option>
+                  <option value="sm">Sales Manager</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </div>
+              {['vendor_manager', 'vendor_editor', 'vendor_viewer'].includes(editUser.role) && (
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Vendor Company</label>
+                  <select
+                    required
+                    value={editUser.vendorCompanyId || ''}
+                    onChange={(e) => setEditUser({ ...editUser, vendorCompanyId: e.target.value })}
+                    className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  >
+                    <option value="">Select Vendor...</option>
+                    {vendors.map(v => (
+                      <option key={v.uid} value={v.uid}>{v.companyName || v.displayName}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="flex gap-4 mt-8">
+                <button
+                  type="button"
+                  onClick={() => setEditUser(null)}
+                  className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800"
+                >
+                  Save Changes
                 </button>
               </div>
             </form>

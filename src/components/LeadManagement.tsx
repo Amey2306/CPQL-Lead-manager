@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, where, arrayUnion, writeBatch, deleteDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage, handleFirestoreError, OperationType } from '../firebase';
+import { analyzeCallRecordingUrl, analyzeCallRecording } from '../services/geminiService';
 import { useAuth } from '../AuthContext';
-import { Plus, Search, Filter, MessageSquare, Edit3, CheckCircle, XCircle, Upload, FileSpreadsheet, FileText as FileIcon, Check, User, Calendar, Clock, CheckSquare, Trash2 } from 'lucide-react';
+import { Plus, Search, Filter, MessageSquare, Edit3, CheckCircle, XCircle, Upload, FileSpreadsheet, FileText as FileIcon, Check, User, Calendar, Clock, CheckSquare, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 
@@ -11,6 +13,7 @@ export default function LeadManagement() {
   const [leads, setLeads] = useState<any[]>([]);
   const [projects, setProjects] = useState<any[]>([]);
   const [sms, setSMs] = useState<any[]>([]);
+  const [admins, setAdmins] = useState<any[]>([]);
   const [partners, setPartners] = useState<any[]>([]);
   const [settings, setSettings] = useState<any>({
     statuses: ['new', 'assigned', 'contacted', 'site_visit_proposed', 'site_visit_done', 'converted', 'lost'],
@@ -35,8 +38,12 @@ export default function LeadManagement() {
     possession: '',
     status: 'new',
     vendorNotes: '',
-    partnerId: ''
+    partnerId: '',
+    callRecordingUrl: '',
+    callAnalysis: null as any
   });
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [recordingFile, setRecordingFile] = useState<File | null>(null);
   const [statusUpdate, setStatusUpdate] = useState({
     leadIds: [] as string[],
     status: '',
@@ -47,8 +54,25 @@ export default function LeadManagement() {
   const [feedbackView, setFeedbackView] = useState<'vendor' | 'sm' | 'tasks'>('vendor');
   const [smViewMode, setSmViewMode] = useState<'all' | 'my'>('my');
   const [tasks, setTasks] = useState<any[]>([]);
+  const [allTasks, setAllTasks] = useState<any[]>([]);
   const [newTask, setNewTask] = useState({ title: '', dueDate: '', assignedTo: '' });
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [filters, setFilters] = useState({
+    search: '',
+    projectId: '',
+    vendorId: '',
+    smId: '',
+    dateFrom: '',
+    dateTo: '',
+    status: '',
+    scoreMin: '',
+    scoreMax: '',
+    taskDateFrom: '',
+    taskDateTo: '',
+  });
+  const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
 
   useEffect(() => {
     if (!profile) return;
@@ -77,26 +101,37 @@ export default function LeadManagement() {
 
     // Fetch SMs for assignment
     let unsubscribeSMs: () => void = () => {};
+    let unsubscribeAdmins: () => void = () => {};
     let unsubscribePartners: () => void = () => {};
 
     if (isAdmin || isPartner || isVendor || isSM) {
       unsubscribeSMs = onSnapshot(query(collection(db, 'users'), where('role', '==', 'sm')), (snapshot) => {
         setSMs(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       }, (error) => handleFirestoreError(error, OperationType.LIST, 'users/sm'));
+      
+      unsubscribeAdmins = onSnapshot(query(collection(db, 'users'), where('role', '==', 'admin')), (snapshot) => {
+        setAdmins(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      }, (error) => handleFirestoreError(error, OperationType.LIST, 'users/admin'));
     }
 
     if (isAdmin || isSM) {
-      unsubscribePartners = onSnapshot(query(collection(db, 'users'), where('role', 'in', ['partner', 'vendor'])), (snapshot) => {
+      unsubscribePartners = onSnapshot(query(collection(db, 'users'), where('role', 'in', ['partner', 'vendor', 'vendor_manager', 'vendor_editor', 'vendor_viewer'])), (snapshot) => {
         setPartners(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       }, (error) => handleFirestoreError(error, OperationType.LIST, 'users/partners'));
     }
+
+    const unsubscribeAllTasks = onSnapshot(collection(db, 'tasks'), (snapshot) => {
+      setAllTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'tasks'));
 
     return () => {
       unsubscribeSettings();
       unsubscribeLeads();
       unsubscribeProjects();
       unsubscribeSMs();
+      unsubscribeAdmins();
       unsubscribePartners();
+      unsubscribeAllTasks();
     };
   }, [profile, isAdmin, isSM, isPartner, isVendor, smViewMode]);
 
@@ -181,18 +216,75 @@ export default function LeadManagement() {
     breakdown.status = statusScores[lead.status] || 0;
     score += breakdown.status;
 
-    return { total: Math.min(score, 100), breakdown };
+    let finalScore = Math.min(score, 100);
+    if (lead.callAnalysis?.suggestedScore) {
+      finalScore = Math.round((finalScore + Number(lead.callAnalysis.suggestedScore)) / 2);
+    }
+
+    return { total: finalScore, breakdown };
+  };
+
+  const handleAnalyzeRecording = async () => {
+    if (!newLead.callRecordingUrl && !recordingFile) {
+      alert('Please provide a URL or upload a file first.');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      let analysis;
+      
+      if (recordingFile) {
+        // Upload to storage first to get URL for the lead record
+        const fileRef = ref(storage, `recordings/${Date.now()}_${recordingFile.name}`);
+        await uploadBytes(fileRef, recordingFile);
+        const urlToAnalyze = await getDownloadURL(fileRef);
+        setNewLead(prev => ({ ...prev, callRecordingUrl: urlToAnalyze }));
+
+        // Convert file to base64 for Gemini analysis
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.readAsDataURL(recordingFile);
+          reader.onload = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1]); // Remove data:audio/mp3;base64,
+          };
+          reader.onerror = error => reject(error);
+        });
+        
+        analysis = await analyzeCallRecording(base64, recordingFile.type || 'audio/mp3');
+      } else {
+        analysis = await analyzeCallRecordingUrl(newLead.callRecordingUrl);
+      }
+
+      setNewLead(prev => ({ ...prev, callAnalysis: analysis }));
+    } catch (error) {
+      console.error('Error analyzing recording:', error);
+      alert('Failed to analyze recording. Please check the URL or file and try again.');
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleAddLead = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      let finalRecordingUrl = newLead.callRecordingUrl;
+
+      // If there's a file but it wasn't analyzed yet, upload it now
+      if (recordingFile && !finalRecordingUrl) {
+        const fileRef = ref(storage, `recordings/${Date.now()}_${recordingFile.name}`);
+        await uploadBytes(fileRef, recordingFile);
+        finalRecordingUrl = await getDownloadURL(fileRef);
+      }
+
       const selectedPartner = (isAdmin || isSM) && newLead.partnerId 
         ? partners.find(p => p.uid === newLead.partnerId) 
         : { uid: profile?.vendorCompanyId || profile?.uid, displayName: profile?.displayName };
 
       await addDoc(collection(db, 'leads'), {
         ...newLead,
+        callRecordingUrl: finalRecordingUrl,
         partnerId: selectedPartner?.uid,
         partnerName: selectedPartner?.displayName,
         createdAt: serverTimestamp(),
@@ -206,7 +298,8 @@ export default function LeadManagement() {
         }]
       });
       setIsModalOpen(false);
-      setNewLead({ enquiryId: '', projectId: '', customerName: '', customerPhone: '', budget: 0, possession: '', status: 'new', vendorNotes: '', partnerId: '' });
+      setNewLead({ enquiryId: '', projectId: '', customerName: '', customerPhone: '', budget: 0, possession: '', status: 'new', vendorNotes: '', partnerId: '', callRecordingUrl: '', callAnalysis: null });
+      setRecordingFile(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'leads');
     }
@@ -256,6 +349,8 @@ export default function LeadManagement() {
         possession: String(row.possession || ''),
         status: 'new',
         vendorNotes: String(row.vendorNotes || ''),
+        callRecordingUrl: String(row.callRecordingUrl || ''),
+        callAnalysis: null,
         partnerId: profile.vendorCompanyId || profile.uid,
         partnerName: profile.displayName,
         createdAt: serverTimestamp(),
@@ -471,6 +566,81 @@ export default function LeadManagement() {
     }
   };
 
+  const handleSort = (key: string) => {
+    setSortConfig(prev => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
+
+  const filteredLeads = leads.filter(lead => {
+    if (filters.search) {
+      const searchLower = filters.search.toLowerCase();
+      if (!lead.customerName?.toLowerCase().includes(searchLower) && 
+          !lead.enquiryId?.toLowerCase().includes(searchLower)) {
+        return false;
+      }
+    }
+    if (filters.projectId && lead.projectId !== filters.projectId) return false;
+    if (filters.vendorId && lead.partnerId !== filters.vendorId) return false;
+    if (filters.smId && lead.smId !== filters.smId) return false;
+    if (filters.status && lead.status !== filters.status) return false;
+    
+    if (filters.dateFrom || filters.dateTo) {
+      const leadDate = lead.createdAt?.toDate ? lead.createdAt.toDate() : new Date(lead.createdAt);
+      if (filters.dateFrom && leadDate < new Date(filters.dateFrom)) return false;
+      if (filters.dateTo && leadDate > new Date(filters.dateTo + 'T23:59:59')) return false;
+    }
+    
+    if (filters.scoreMin || filters.scoreMax) {
+      const score = calculateLeadScore(lead).total;
+      if (filters.scoreMin && score < Number(filters.scoreMin)) return false;
+      if (filters.scoreMax && score > Number(filters.scoreMax)) return false;
+    }
+    
+    if (filters.taskDateFrom || filters.taskDateTo) {
+      const leadTasks = allTasks.filter(t => t.leadId === lead.id);
+      const hasMatchingTask = leadTasks.some(task => {
+        if (!task.dueDate) return false;
+        const taskDate = new Date(task.dueDate);
+        if (filters.taskDateFrom && taskDate < new Date(filters.taskDateFrom)) return false;
+        if (filters.taskDateTo && taskDate > new Date(filters.taskDateTo + 'T23:59:59')) return false;
+        return true;
+      });
+      if (!hasMatchingTask) return false;
+    }
+    return true;
+  });
+
+  const sortedLeads = [...filteredLeads].sort((a, b) => {
+    let valA, valB;
+    switch (sortConfig.key) {
+      case 'score':
+        valA = calculateLeadScore(a).total;
+        valB = calculateLeadScore(b).total;
+        break;
+      case 'date':
+        valA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt).getTime();
+        valB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt).getTime();
+        break;
+      case 'status':
+        valA = a.status;
+        valB = b.status;
+        break;
+      case 'customer':
+        valA = a.customerName?.toLowerCase();
+        valB = b.customerName?.toLowerCase();
+        break;
+      default:
+        valA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt).getTime();
+        valB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt).getTime();
+    }
+    
+    if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
+    if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
+    return 0;
+  });
+
   if (!profile) return <div className="p-8 text-center text-gray-500">Loading...</div>;
 
   const myLeadsCount = leads.filter(l => l.smId === profile.uid).length;
@@ -609,14 +779,147 @@ export default function LeadManagement() {
             <input
               type="text"
               placeholder="Search leads by name or ID"
+              value={filters.search}
+              onChange={(e) => setFilters({ ...filters, search: e.target.value })}
               className="w-full pl-12 pr-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-gray-900 focus:bg-white outline-none transition-all"
             />
           </div>
-          <button className="flex items-center gap-2 px-6 py-3 bg-white text-gray-600 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all font-medium">
+          <button 
+            onClick={() => setIsFilterOpen(!isFilterOpen)}
+            className={`flex items-center gap-2 px-6 py-3 rounded-xl border transition-all font-medium ${
+              isFilterOpen ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+            }`}
+          >
             <Filter className="w-4 h-4" />
-            Filter
+            Filters
           </button>
         </div>
+
+        {isFilterOpen && (
+          <div className="p-4 mt-2 border-t border-gray-100 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Project</label>
+              <select
+                value={filters.projectId}
+                onChange={(e) => setFilters({ ...filters, projectId: e.target.value })}
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+              >
+                <option value="">All Projects</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            
+            {(isAdmin || isSM) && (
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Vendor/Partner</label>
+                <select
+                  value={filters.vendorId}
+                  onChange={(e) => setFilters({ ...filters, vendorId: e.target.value })}
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                >
+                  <option value="">All Vendors</option>
+                  {partners.map(p => <option key={p.uid} value={p.uid}>{p.companyName || p.displayName}</option>)}
+                </select>
+              </div>
+            )}
+
+            {(isAdmin || isVendor || isPartner) && (
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Sales Manager</label>
+                <select
+                  value={filters.smId}
+                  onChange={(e) => setFilters({ ...filters, smId: e.target.value })}
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                >
+                  <option value="">All SMs</option>
+                  {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Status</label>
+              <select
+                value={filters.status}
+                onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+              >
+                <option value="">All Statuses</option>
+                {settings.statuses.map((s: string) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Lead Date Range</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={filters.dateFrom}
+                  onChange={(e) => setFilters({ ...filters, dateFrom: e.target.value })}
+                  className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-gray-900"
+                />
+                <span className="text-gray-400">-</span>
+                <input
+                  type="date"
+                  value={filters.dateTo}
+                  onChange={(e) => setFilters({ ...filters, dateTo: e.target.value })}
+                  className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-gray-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Score Range</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  placeholder="Min"
+                  value={filters.scoreMin}
+                  onChange={(e) => setFilters({ ...filters, scoreMin: e.target.value })}
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                />
+                <span className="text-gray-400">-</span>
+                <input
+                  type="number"
+                  placeholder="Max"
+                  value={filters.scoreMax}
+                  onChange={(e) => setFilters({ ...filters, scoreMax: e.target.value })}
+                  className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Task Followup Date</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={filters.taskDateFrom}
+                  onChange={(e) => setFilters({ ...filters, taskDateFrom: e.target.value })}
+                  className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-gray-900"
+                />
+                <span className="text-gray-400">-</span>
+                <input
+                  type="date"
+                  value={filters.taskDateTo}
+                  onChange={(e) => setFilters({ ...filters, taskDateTo: e.target.value })}
+                  className="w-full px-2 py-2 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-gray-900"
+                />
+              </div>
+            </div>
+            
+            <div className="flex items-end">
+              <button
+                onClick={() => setFilters({
+                  search: '', projectId: '', vendorId: '', smId: '', dateFrom: '', dateTo: '', status: '', scoreMin: '', scoreMax: '', taskDateFrom: '', taskDateTo: ''
+                })}
+                className="w-full px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-all"
+              >
+                Clear Filters
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Leads Table */}
@@ -633,19 +936,39 @@ export default function LeadManagement() {
                     onChange={toggleSelectAll}
                   />
                 </th>
-                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Enquiry ID</th>
-                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Customer</th>
+                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100" onClick={() => handleSort('date')}>
+                  <div className="flex items-center gap-1">
+                    Enquiry ID
+                    {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </div>
+                </th>
+                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100" onClick={() => handleSort('customer')}>
+                  <div className="flex items-center gap-1">
+                    Customer
+                    {sortConfig.key === 'customer' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </div>
+                </th>
                 <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Project</th>
                 {(isAdmin || isSM) && <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Partner/Vendor</th>}
                 {isSM && <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Vendor Notes</th>}
-                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Score</th>
-                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Status</th>
+                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100" onClick={() => handleSort('score')}>
+                  <div className="flex items-center gap-1">
+                    Score
+                    {sortConfig.key === 'score' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </div>
+                </th>
+                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100" onClick={() => handleSort('status')}>
+                  <div className="flex items-center gap-1">
+                    Status
+                    {sortConfig.key === 'status' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </div>
+                </th>
                 <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Assigned SM</th>
                 <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {leads.map((lead) => (
+              {sortedLeads.map((lead) => (
                 <tr key={lead.id} className={`hover:bg-gray-50 transition-colors ${selectedLeadIds.includes(lead.id) ? 'bg-blue-50/30' : ''}`}>
                   <td className="px-6 py-4">
                     <input 
@@ -667,7 +990,12 @@ export default function LeadManagement() {
                   </td>
                   {(isAdmin || isSM) && (
                     <td className="px-6 py-4">
-                      <p className="text-sm font-bold text-gray-900">{lead.partnerName || 'Direct'}</p>
+                      {(() => {
+                        const partner = partners.find(p => p.uid === lead.partnerId);
+                        return (
+                          <p className="text-sm font-bold text-gray-900">{partner?.companyName || partner?.displayName || lead.partnerName || 'Direct'}</p>
+                        );
+                      })()}
                     </td>
                   )}
                   {isSM && (
@@ -681,7 +1009,7 @@ export default function LeadManagement() {
                     {(() => {
                       const score = calculateLeadScore(lead).total;
                       return (
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-full border-2 border-gray-100 flex items-center justify-center relative">
                             <svg className="w-full h-full -rotate-90">
                               <circle
@@ -707,6 +1035,15 @@ export default function LeadManagement() {
                             </svg>
                             <span className="absolute text-[10px] font-black">{score}</span>
                           </div>
+                          {lead.callAnalysis?.priority && (
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              lead.callAnalysis.priority === 'High' ? 'bg-red-100 text-red-700' :
+                              lead.callAnalysis.priority === 'Medium' ? 'bg-orange-100 text-orange-700' :
+                              'bg-blue-100 text-blue-700'
+                            }`}>
+                              {lead.callAnalysis.priority}
+                            </span>
+                          )}
                         </div>
                       );
                     })()}
@@ -938,7 +1275,7 @@ export default function LeadManagement() {
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Bulk Upload Leads</h2>
             <p className="text-sm text-gray-500 mb-6">
               Upload a CSV or Excel file with columns: <br/>
-              <code className="bg-gray-100 px-1 rounded">enquiryId, projectId, customerName, customerPhone, budget, possession, vendorNotes</code>
+              <code className="bg-gray-100 px-1 rounded">enquiryId, projectId, customerName, customerPhone, budget, possession, vendorNotes, callRecordingUrl</code>
             </p>
             
             <div 
@@ -1064,6 +1401,77 @@ export default function LeadManagement() {
                   placeholder="Any initial notes about this lead..."
                 />
               </div>
+              <div className="col-span-2 bg-gray-50 p-4 rounded-xl border border-gray-200">
+                <label className="block text-sm font-bold text-gray-900 mb-2">Call Recording (Optional)</label>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Upload File (MP3/WAV)</label>
+                    <input
+                      type="file"
+                      accept="audio/mp3,audio/wav"
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) {
+                          setRecordingFile(e.target.files[0]);
+                          setNewLead({ ...newLead, callRecordingUrl: '' });
+                        }
+                      }}
+                      className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gray-900 file:text-white hover:file:bg-gray-800"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-px bg-gray-200 flex-1"></div>
+                    <span className="text-xs text-gray-400 font-bold uppercase">OR</span>
+                    <div className="h-px bg-gray-200 flex-1"></div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Cloud URL</label>
+                    <input
+                      type="url"
+                      placeholder="https://..."
+                      value={newLead.callRecordingUrl}
+                      onChange={(e) => {
+                        setNewLead({ ...newLead, callRecordingUrl: e.target.value });
+                        setRecordingFile(null);
+                      }}
+                      className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none text-sm"
+                    />
+                  </div>
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={handleAnalyzeRecording}
+                      disabled={isAnalyzing || (!newLead.callRecordingUrl && !recordingFile)}
+                      className="w-full py-2 bg-blue-50 text-blue-600 font-bold rounded-lg text-sm hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                          Analyzing Recording...
+                        </>
+                      ) : (
+                        'Analyze Recording'
+                      )}
+                    </button>
+                  </div>
+                  
+                  {newLead.callAnalysis && (
+                    <div className="mt-4 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+                      <h4 className="text-sm font-bold text-gray-900 mb-2">Analysis Results</h4>
+                      <div className="space-y-2 text-sm">
+                        <p><span className="font-bold text-gray-700">Priority:</span> <span className={`font-bold ${newLead.callAnalysis.priority === 'High' ? 'text-red-600' : newLead.callAnalysis.priority === 'Medium' ? 'text-orange-500' : 'text-blue-500'}`}>{newLead.callAnalysis.priority}</span></p>
+                        <p><span className="font-bold text-gray-700">Suggested Score:</span> {newLead.callAnalysis.suggestedScore}</p>
+                        <p><span className="font-bold text-gray-700">Summary:</span> {newLead.callAnalysis.summary}</p>
+                        <div>
+                          <span className="font-bold text-gray-700">Pain Points:</span>
+                          <ul className="list-disc pl-5 mt-1 text-gray-600">
+                            {newLead.callAnalysis.painPoints?.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="col-span-2 flex gap-4 mt-8">
                 <button
                   type="button"
@@ -1172,6 +1580,26 @@ export default function LeadManagement() {
             </div>
 
             <div className="max-h-80 overflow-y-auto mb-6 space-y-4">
+              {selectedLead.callRecordingUrl && (
+                <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-4">
+                  <h4 className="text-sm font-bold text-gray-900 mb-2">Call Recording</h4>
+                  <audio controls src={selectedLead.callRecordingUrl} className="w-full h-8 mb-3" />
+                  {selectedLead.callAnalysis && (
+                    <div className="text-sm space-y-2 mt-3 pt-3 border-t border-blue-200">
+                      <p><span className="font-bold text-gray-700">Priority:</span> <span className={`font-bold ${selectedLead.callAnalysis.priority === 'High' ? 'text-red-600' : selectedLead.callAnalysis.priority === 'Medium' ? 'text-orange-500' : 'text-blue-500'}`}>{selectedLead.callAnalysis.priority}</span></p>
+                      <p><span className="font-bold text-gray-700">Suggested Score:</span> {selectedLead.callAnalysis.suggestedScore}</p>
+                      <p><span className="font-bold text-gray-700">Summary:</span> {selectedLead.callAnalysis.summary}</p>
+                      <div>
+                        <span className="font-bold text-gray-700">Pain Points:</span>
+                        <ul className="list-disc pl-5 mt-1 text-gray-600">
+                          {selectedLead.callAnalysis.painPoints?.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {feedbackView === 'tasks' ? (
                 <div className="space-y-6">
                   <form onSubmit={handleAddTask} className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-3">
@@ -1198,8 +1626,12 @@ export default function LeadManagement() {
                         className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
                       >
                         <option value="">Assign to...</option>
-                        {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
-                        {isAdmin && <option value={profile?.uid}>Me (Admin)</option>}
+                        <optgroup label="Sales Managers">
+                          {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
+                        </optgroup>
+                        <optgroup label="Admins">
+                          {admins.map(admin => <option key={admin.uid} value={admin.uid}>{admin.displayName} (Admin)</option>)}
+                        </optgroup>
                       </select>
                     </div>
                     <button

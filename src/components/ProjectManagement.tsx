@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../AuthContext';
+import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Building2, MapPin, Calendar, Edit2, Trash2 } from 'lucide-react';
 
 export default function ProjectManagement() {
@@ -82,16 +83,20 @@ export default function ProjectManagement() {
   };
 
   return (
-    <div className="space-y-8">
-      <header className="flex justify-between items-center">
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6 md:space-y-8"
+    >
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Projects</h1>
-          <p className="text-gray-500 mt-1">Manage real estate projects and inventory.</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">Projects</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">Manage real estate projects and inventory.</p>
         </div>
         {isAdmin && (
           <button
             onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg"
+            className="w-full md:w-auto flex items-center justify-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg hover:shadow-xl active:scale-95"
           >
             <Plus className="w-5 h-5" />
             New Project
@@ -99,9 +104,15 @@ export default function ProjectManagement() {
         )}
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {projects.map((project) => (
-          <div key={project.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow relative group">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
+        {projects.map((project, i) => (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.05 }}
+            key={project.id} 
+            className="bg-white p-5 md:p-6 rounded-2xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow relative group"
+          >
             <div className="flex justify-between items-start mb-4">
               <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
                 <Building2 className="w-6 h-6" />
@@ -154,15 +165,21 @@ export default function ProjectManagement() {
                 Possession: {project.possession || 'N/A'}
               </div>
             </div>
-          </div>
+          </motion.div>
         ))}
       </div>
 
       {/* Create Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Create New Project</h2>
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-lg w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Create New Project</h2>
             <form onSubmit={handleAddProject} className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
                 <label className="block text-sm font-bold text-gray-700 mb-1">Project Name</label>
@@ -251,15 +268,22 @@ export default function ProjectManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Edit Modal */}
-      {isEditModalOpen && editingProject && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Edit Project</h2>
+      <AnimatePresence>
+        {isEditModalOpen && editingProject && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-lg w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Edit Project</h2>
             <form onSubmit={handleUpdateProject} className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
                 <label className="block text-sm font-bold text-gray-700 mb-1">Project Name</label>
@@ -348,9 +372,10 @@ export default function ProjectManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }

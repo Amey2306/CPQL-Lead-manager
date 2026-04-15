@@ -1,11 +1,22 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../AuthContext';
-import { Plus, UserPlus, Shield, Mail, Trash2, Upload, Edit2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Plus, UserPlus, Shield, Mail, Trash2, Upload, Edit2, Info } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import { useRef } from 'react';
+import { showToast } from './ErrorBoundary';
+
+const roleDescriptions: Record<string, string> = {
+  partner: "Can view and manage their own leads.",
+  vendor: "Main vendor account. Can manage all leads for their company.",
+  vendor_manager: "Can manage leads and users for their assigned vendor company.",
+  vendor_editor: "Can edit leads for their assigned vendor company.",
+  vendor_viewer: "Can view leads for their assigned vendor company.",
+  sm: "Sales Manager. Can manage leads assigned to them.",
+  admin: "Full system access. Can manage all users, leads, and settings."
+};
 
 export default function UserManagement() {
   const { isAdmin } = useAuth();
@@ -108,7 +119,7 @@ export default function UserManagement() {
     try {
       await batch.commit();
       setIsBulkModalOpen(false);
-      alert('Bulk user upload successful!');
+      showToast('Bulk user upload successful!', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'users/bulk');
     }
@@ -144,44 +155,57 @@ export default function UserManagement() {
   if (!isAdmin) return <div className="p-8 text-center text-gray-500">Access Denied</div>;
 
   return (
-    <div className="space-y-8">
-      <header className="flex justify-between items-center">
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6 md:space-y-8"
+    >
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-          <p className="text-gray-500 mt-1">Manage partners, vendors, sales managers, and administrators.</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">User Management</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">Manage partners, vendors, sales managers, and administrators.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex w-full md:w-auto gap-3">
           <button
             onClick={() => setIsBulkModalOpen(true)}
-            className="flex items-center gap-2 bg-white border border-gray-200 text-gray-900 px-6 py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm"
+            className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm"
           >
             <Upload className="w-5 h-5" />
-            Bulk Upload
+            <span className="hidden md:inline">Bulk Upload</span>
+            <span className="md:hidden">Bulk</span>
           </button>
           <button
             onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg"
+            className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-gray-900 text-white px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg hover:shadow-xl active:scale-95"
           >
             <UserPlus className="w-5 h-5" />
-            Add User
+            <span className="hidden md:inline">Add User</span>
+            <span className="md:hidden">Add</span>
           </button>
         </div>
       </header>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-100">
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">User</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Email</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Role</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Vendor Company</th>
-              <th className="px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {users.map((user) => (
-              <tr key={user.id} className="hover:bg-gray-50 transition-colors">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-100">
+                <th className="px-4 md:px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">User</th>
+                <th className="px-4 md:px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Email</th>
+                <th className="px-4 md:px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Role</th>
+                <th className="px-4 md:px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Vendor Company</th>
+                <th className="px-4 md:px-6 py-4 text-xs font-bold text-gray-500 uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {users.map((user, i) => (
+                <motion.tr 
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.05 }}
+                  key={user.id} 
+                  className="hover:bg-gray-50 transition-colors"
+                >
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center font-bold text-gray-600">
@@ -192,22 +216,31 @@ export default function UserManagement() {
                 </td>
                 <td className="px-6 py-4 text-gray-600">{user.email}</td>
                 <td className="px-6 py-4">
-                  <select
-                    value={user.role}
-                    onChange={(e) => updateRole(user.id, e.target.value)}
-                    className="bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-gray-900 focus:border-gray-900 block w-full p-2"
-                  >
-                    <option value="partner">Partner</option>
-                    <option value="vendor">Vendor (Main)</option>
-                    <option value="vendor_manager">Vendor Manager</option>
-                    <option value="vendor_editor">Vendor Editor</option>
-                    <option value="vendor_viewer">Vendor Viewer</option>
-                    <option value="sm">Sales Manager</option>
-                    <option value="admin">Admin</option>
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={user.role}
+                      onChange={(e) => updateRole(user.id, e.target.value)}
+                      className="bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-gray-900 focus:border-gray-900 block w-full p-2"
+                    >
+                      <option value="partner">Partner</option>
+                      <option value="vendor">Vendor (Main)</option>
+                      <option value="vendor_manager">Vendor Manager</option>
+                      <option value="vendor_editor">Vendor Editor</option>
+                      <option value="vendor_viewer">Vendor Viewer</option>
+                      <option value="sm">Sales Manager</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                    <div className="relative group flex-shrink-0">
+                      <Info className="w-4 h-4 text-gray-400 cursor-help" />
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-gray-900 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-10 shadow-xl text-center">
+                        {roleDescriptions[user.role] || 'No description available.'}
+                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                      </div>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-6 py-4">
-                  {['vendor_manager', 'vendor_editor', 'vendor_viewer'].includes(user.role) && (
+                  {['vendor_manager', 'vendor_editor', 'vendor_viewer'].includes(user.role) ? (
                     <select
                       value={user.vendorCompanyId || ''}
                       onChange={(e) => updateVendorCompany(user.id, e.target.value)}
@@ -218,6 +251,10 @@ export default function UserManagement() {
                         <option key={v.uid} value={v.uid}>{v.companyName || v.displayName}</option>
                       ))}
                     </select>
+                  ) : user.role === 'vendor' ? (
+                    <span className="text-gray-900 font-medium">{user.companyName || '-'}</span>
+                  ) : (
+                    <span className="text-gray-400">-</span>
                   )}
                 </td>
                 <td className="px-6 py-4">
@@ -236,16 +273,23 @@ export default function UserManagement() {
                     </button>
                   </div>
                 </td>
-              </tr>
+              </motion.tr>
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Bulk Upload Modal */}
-      {isBulkModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
+      <AnimatePresence>
+        {isBulkModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Bulk Upload Users</h2>
             <p className="text-sm text-gray-500 mb-6">
               Upload a CSV or Excel file with columns: <br/>
@@ -279,15 +323,22 @@ export default function UserManagement() {
                 Cancel
               </button>
             </div>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Add User Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Add New User</h2>
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Add New User</h2>
             <form onSubmit={handleAddUser} className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">Full Name</label>
@@ -369,14 +420,21 @@ export default function UserManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
       {/* Edit User Modal */}
-      {editUser && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Edit User</h2>
+      <AnimatePresence>
+        {editUser && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-6">Edit User</h2>
             <form onSubmit={handleUpdateUser} className="space-y-4">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">Full Name</label>
@@ -458,9 +516,10 @@ export default function UserManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }

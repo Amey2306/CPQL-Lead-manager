@@ -4,6 +4,8 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../AuthContext';
 import { Settings as SettingsIcon, Plus, Trash2, CheckCircle2, XCircle } from 'lucide-react';
 
+import { showToast } from './ErrorBoundary';
+
 export default function Settings() {
   const { isAdmin } = useAuth();
   const [statuses, setStatuses] = useState<string[]>([]);
@@ -49,7 +51,7 @@ export default function Settings() {
 
   const handleRemoveStatus = async (status: string) => {
     if (['new', 'assigned', 'lost'].includes(status)) {
-      alert('Default statuses cannot be removed.');
+      showToast('Default statuses cannot be removed.', 'error');
       return;
     }
     try {

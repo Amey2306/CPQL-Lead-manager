@@ -1,13 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, where, arrayUnion, writeBatch, deleteDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, where, arrayUnion, writeBatch, deleteDoc, getDocs, setDoc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../firebase';
 import { analyzeCallRecordingUrl, analyzeCallRecording } from '../services/geminiService';
 import { useAuth } from '../AuthContext';
-import { Plus, Search, Filter, MessageSquare, Edit3, CheckCircle, XCircle, Upload, FileSpreadsheet, FileText as FileIcon, Check, User, Calendar, Clock, CheckSquare, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Plus, Search, Filter, MessageSquare, Edit3, CheckCircle, XCircle, Upload, FileSpreadsheet, FileText as FileIcon, Check, User, Calendar, Clock, CheckSquare, Trash2, ChevronUp, ChevronDown, RefreshCw, Link, CornerUpLeft } from 'lucide-react';
 import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
 
+import * as XLSX from 'xlsx';
+import { showToast } from './ErrorBoundary';
 export default function LeadManagement() {
   const { profile, isAdmin, isSM, isPartner, isVendor, isVendorManager, isVendorEditor } = useAuth();
   const [leads, setLeads] = useState<any[]>([]);
@@ -44,18 +46,25 @@ export default function LeadManagement() {
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [recordingFile, setRecordingFile] = useState<File | null>(null);
+  const [isIntegrationModalOpen, setIsIntegrationModalOpen] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{added: number, skipped: number} | null>(null);
   const [statusUpdate, setStatusUpdate] = useState({
     leadIds: [] as string[],
     status: '',
     notes: ''
   });
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
+  const [returnLeadId, setReturnLeadId] = useState('');
+  const [returnReason, setReturnReason] = useState('');
   const [feedback, setFeedback] = useState('');
   const [feedbackView, setFeedbackView] = useState<'vendor' | 'sm' | 'tasks'>('vendor');
   const [smViewMode, setSmViewMode] = useState<'all' | 'my'>('my');
   const [tasks, setTasks] = useState<any[]>([]);
   const [allTasks, setAllTasks] = useState<any[]>([]);
-  const [newTask, setNewTask] = useState({ title: '', dueDate: '', assignedTo: '' });
+  const [newTask, setNewTask] = useState({ title: '', dueDate: new Date().toISOString().split('T')[0], assignedTo: '' });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -73,6 +82,18 @@ export default function LeadManagement() {
     taskDateTo: '',
   });
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
+
+  useEffect(() => {
+    if (profile?.uid) {
+      getDoc(doc(db, 'integrations', profile.uid)).then(docSnap => {
+        if (docSnap.exists()) {
+          setSheetUrl(docSnap.data().googleSheetUrl || '');
+        }
+      }).catch(error => {
+        console.error("Error fetching integration settings:", error);
+      });
+    }
+  }, [profile]);
 
   useEffect(() => {
     if (!profile) return;
@@ -166,7 +187,7 @@ export default function LeadManagement() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
-      setNewTask({ title: '', dueDate: '', assignedTo: '' });
+      setNewTask({ title: '', dueDate: new Date().toISOString().split('T')[0], assignedTo: '' });
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'tasks');
     }
@@ -226,7 +247,7 @@ export default function LeadManagement() {
 
   const handleAnalyzeRecording = async () => {
     if (!newLead.callRecordingUrl && !recordingFile) {
-      alert('Please provide a URL or upload a file first.');
+      showToast('Please provide a URL or upload a file first.', 'info');
       return;
     }
 
@@ -260,7 +281,7 @@ export default function LeadManagement() {
       setNewLead(prev => ({ ...prev, callAnalysis: analysis }));
     } catch (error) {
       console.error('Error analyzing recording:', error);
-      alert('Failed to analyze recording. Please check the URL or file and try again.');
+      showToast('Failed to analyze recording. Please check the URL or file and try again.', 'error');
     } finally {
       setIsAnalyzing(false);
     }
@@ -368,9 +389,104 @@ export default function LeadManagement() {
     try {
       await batch.commit();
       setIsBulkModalOpen(false);
-      alert('Bulk upload successful!');
+      showToast('Bulk upload successful!', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'leads/bulk');
+    }
+  };
+
+  const handleSyncSheet = async () => {
+    if (!sheetUrl) return;
+    setIsSyncing(true);
+    setSyncResult(null);
+    try {
+      if (profile?.uid) {
+        await setDoc(doc(db, 'integrations', profile.uid), { googleSheetUrl: sheetUrl }, { merge: true });
+      }
+
+      const response = await fetch(sheetUrl);
+      if (!response.ok) throw new Error('Network response was not ok');
+      const csvText = await response.text();
+
+      Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true,
+        complete: async (results) => {
+          const data = results.data;
+          let added = 0;
+          let skipped = 0;
+
+          const leadsRef = collection(db, 'leads');
+          let q;
+          if (isAdmin || isSM) {
+             q = query(leadsRef);
+          } else {
+             q = query(leadsRef, where('partnerId', '==', profile?.vendorCompanyId || profile?.uid));
+          }
+          const snapshot = await getDocs(q);
+          const existingIds = new Set(snapshot.docs.map(d => (d.data() as any).enquiryId));
+
+          let batch = writeBatch(db);
+          let batchCount = 0;
+
+          for (const row of data as any[]) {
+            if (!row.enquiryId || !row.projectId) continue;
+            if (existingIds.has(String(row.enquiryId))) {
+              skipped++;
+              continue;
+            }
+
+            const newDocRef = doc(leadsRef);
+            batch.set(newDocRef, {
+              enquiryId: String(row.enquiryId),
+              projectId: String(row.projectId),
+              customerName: String(row.customerName || ''),
+              customerPhone: String(row.customerPhone || ''),
+              budget: Number(row.budget) || 0,
+              possession: String(row.possession || ''),
+              status: 'new',
+              vendorNotes: String(row.vendorNotes || ''),
+              callRecordingUrl: String(row.callRecordingUrl || ''),
+              callAnalysis: null,
+              partnerId: profile?.vendorCompanyId || profile?.uid,
+              partnerName: profile?.displayName,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+              partnerFeedback: [],
+              statusHistory: [{
+                status: 'new',
+                notes: 'Synced from Google Sheets',
+                updatedAt: new Date(),
+                updatedBy: profile?.displayName
+              }]
+            });
+            added++;
+            batchCount++;
+
+            if (batchCount === 490) {
+              await batch.commit();
+              batch = writeBatch(db);
+              batchCount = 0;
+            }
+          }
+          
+          if (batchCount > 0) {
+            await batch.commit();
+          }
+          
+          setSyncResult({ added, skipped });
+          setIsSyncing(false);
+        },
+        error: (error) => {
+          console.error('CSV Parse Error:', error);
+          showToast('Failed to parse the Google Sheet. Please ensure it is published as a CSV.', 'error');
+          setIsSyncing(false);
+        }
+      });
+    } catch (error) {
+      console.error("Sync error:", error);
+      showToast("Failed to fetch the Google Sheet. Please check the URL and ensure it's published to the web as CSV.", 'error');
+      setIsSyncing(false);
     }
   };
 
@@ -472,6 +588,31 @@ export default function LeadManagement() {
     }
   };
 
+  const handleReturnSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!returnReason || !returnLeadId) return;
+
+    try {
+      await updateDoc(doc(db, 'leads', returnLeadId), {
+        smId: '',
+        status: 'new',
+        updatedAt: serverTimestamp(),
+        statusHistory: arrayUnion({
+          status: 'returned_to_vendor',
+          notes: `Returned by SM: ${returnReason}`,
+          updatedAt: new Date(),
+          updatedBy: profile?.displayName
+        })
+      });
+      showToast('Lead returned to vendor successfully.', 'success');
+      setIsReturnModalOpen(false);
+      setReturnLeadId('');
+      setReturnReason('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `leads/${returnLeadId}`);
+    }
+  };
+
   const handleAssignSM = async (leadId: string, smId: string) => {
     try {
       const selectedSM = sms.find(s => s.uid === smId);
@@ -525,7 +666,7 @@ export default function LeadManagement() {
     try {
       await batch.commit();
       setSelectedLeadIds([]);
-      alert('Bulk SM assignment successful!');
+      showToast('Bulk SM assignment successful!', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'leads/bulk-assign');
     }
@@ -647,20 +788,24 @@ export default function LeadManagement() {
   const pendingLeadsCount = leads.filter(l => l.smId === profile.uid && l.status === 'new').length;
 
   return (
-    <div className="space-y-8">
-      <header className="flex justify-between items-end">
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-6 md:space-y-8"
+    >
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Lead Management</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">Lead Management</h1>
+          <p className="text-sm md:text-base text-gray-500 mt-1">
             {isSM ? `Manage your assigned leads and track progress.` : `Track and manage leads across all projects.`}
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-2 md:gap-3 w-full md:w-auto">
           {isSM && (
-            <div className="flex bg-gray-100 p-1 rounded-xl mr-4">
+            <div className="flex bg-gray-100 p-1 rounded-xl w-full md:w-auto mb-2 md:mb-0 md:mr-4">
               <button
                 onClick={() => setSmViewMode('my')}
-                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                className={`flex-1 md:flex-none px-4 py-2 text-xs font-bold rounded-lg transition-all ${
                   smViewMode === 'my' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -668,7 +813,7 @@ export default function LeadManagement() {
               </button>
               <button
                 onClick={() => setSmViewMode('all')}
-                className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                className={`flex-1 md:flex-none px-4 py-2 text-xs font-bold rounded-lg transition-all ${
                   smViewMode === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -677,103 +822,128 @@ export default function LeadManagement() {
             </div>
           )}
           {(isPartner || isVendor || isAdmin) && (
-            <>
+            <div className="flex flex-wrap gap-2 w-full md:w-auto">
+              <button
+                onClick={() => setIsIntegrationModalOpen(true)}
+                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
+              >
+                <RefreshCw className="w-4 h-4 md:w-5 md:h-5" />
+                <span className="hidden sm:inline">Integrations</span>
+              </button>
               <button
                 onClick={() => setIsBulkModalOpen(true)}
-                className="flex items-center gap-2 bg-white border border-gray-200 text-gray-900 px-6 py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm"
+                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
               >
-                <Upload className="w-5 h-5" />
-                Bulk Upload
+                <Upload className="w-4 h-4 md:w-5 md:h-5" />
+                <span className="hidden sm:inline">Bulk Upload</span>
               </button>
               <button
                 onClick={() => setIsModalOpen(true)}
-                className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg"
+                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-gray-900 text-white px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg hover:shadow-xl active:scale-95 text-sm md:text-base"
               >
-                <Plus className="w-5 h-5" />
-                Drop a Lead
+                <Plus className="w-4 h-4 md:w-5 md:h-5" />
+                Drop Lead
               </button>
-            </>
+            </div>
           )}
         </div>
       </header>
 
       {isSM && smViewMode === 'my' && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-blue-600 p-6 rounded-3xl text-white shadow-xl shadow-blue-200">
-            <p className="text-blue-100 text-sm font-bold uppercase tracking-wider mb-1">My Total Leads</p>
-            <p className="text-4xl font-black">{myLeadsCount}</p>
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6"
+        >
+          <div className="bg-gradient-to-br from-blue-600 to-blue-700 p-4 md:p-6 rounded-2xl md:rounded-3xl text-white shadow-xl shadow-blue-200/50 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
+            <p className="text-blue-100 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">My Total Leads</p>
+            <p className="text-3xl md:text-4xl font-black">{myLeadsCount}</p>
           </div>
-          <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-            <p className="text-gray-400 text-sm font-bold uppercase tracking-wider mb-1">New / Pending</p>
-            <p className="text-4xl font-black text-gray-900">{pendingLeadsCount}</p>
+          <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+            <p className="text-gray-400 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">New / Pending</p>
+            <p className="text-3xl md:text-4xl font-black text-gray-900">{pendingLeadsCount}</p>
           </div>
-          <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-            <p className="text-gray-400 text-sm font-bold uppercase tracking-wider mb-1">Converted</p>
-            <p className="text-4xl font-black text-green-600">{leads.filter(l => l.smId === profile.uid && l.status === 'converted').length}</p>
+          <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+            <p className="text-gray-400 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">Converted</p>
+            <p className="text-3xl md:text-4xl font-black text-green-600">{leads.filter(l => l.smId === profile.uid && l.status === 'converted').length}</p>
           </div>
-          <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-            <p className="text-gray-400 text-sm font-bold uppercase tracking-wider mb-1">Conversion Rate</p>
-            <p className="text-4xl font-black text-blue-600">
+          <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+            <p className="text-gray-400 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">Conversion Rate</p>
+            <p className="text-3xl md:text-4xl font-black text-blue-600">
               {myLeadsCount > 0 ? ((leads.filter(l => l.smId === profile.uid && l.status === 'converted').length / myLeadsCount) * 100).toFixed(1) : 0}%
             </p>
           </div>
-        </div>
+        </motion.div>
       )}
 
       {/* Bulk Actions Bar */}
-      {selectedLeadIds.length > 0 && (
-        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-6 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
-          <div className="flex items-center gap-3 pr-6 border-r border-gray-700">
-            <div className="bg-blue-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold">
-              {selectedLeadIds.length}
+      <AnimatePresence>
+        {selectedLeadIds.length > 0 && (
+          <motion.div 
+            initial={{ y: 100, opacity: 0, x: '-50%' }}
+            animate={{ y: 0, opacity: 1, x: '-50%' }}
+            exit={{ y: 100, opacity: 0, x: '-50%' }}
+            className="fixed bottom-4 md:bottom-8 left-1/2 bg-gray-900 text-white px-4 md:px-6 py-3 md:py-4 rounded-2xl shadow-2xl flex flex-wrap items-center gap-4 md:gap-6 z-50 w-[90%] md:w-auto justify-center md:justify-start"
+          >
+            <div className="flex items-center gap-3 pr-4 md:pr-6 border-r border-gray-700">
+              <div className="bg-blue-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold">
+                {selectedLeadIds.length}
+              </div>
+              <span className="text-sm font-medium hidden sm:inline">Leads Selected</span>
             </div>
-            <span className="text-sm font-medium">Leads Selected</span>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {(isAdmin || isSM) && (
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-gray-400" />
-                <select
-                  onChange={(e) => handleBulkStatusUpdate(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"
-                  defaultValue=""
-                >
-                  <option value="" disabled>Update Status</option>
-                  {settings.statuses.map((s: string) => (
-                    <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
-                  ))}
-                </select>
-              </div>
-            )}
+            
+            <div className="flex flex-wrap items-center gap-2 md:gap-4">
+              {(isAdmin || isSM) && (
+                <div className="flex items-center gap-2">
+                  <Check className="w-4 h-4 text-gray-400 hidden sm:block" />
+                  <select
+                    onChange={(e) => handleBulkStatusUpdate(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-xs md:text-sm rounded-lg px-2 md:px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[120px] md:max-w-none"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>Status</option>
+                    {settings.statuses.map((s: string) => (
+                      <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
-            {(isAdmin || isSM || isPartner || isVendor) && (
-              <div className="flex items-center gap-2">
-                <User className="w-4 h-4 text-gray-400" />
-                <select
-                  onChange={(e) => handleBulkAssignSM(e.target.value)}
-                  className="bg-gray-800 border border-gray-700 text-sm rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none"
-                  defaultValue=""
-                >
-                  <option value="" disabled>Assign SM</option>
-                  {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
-                </select>
-              </div>
-            )}
+              {(isAdmin || isSM || isPartner || isVendor) && (
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-gray-400 hidden sm:block" />
+                  <select
+                    onChange={(e) => handleBulkAssignSM(e.target.value)}
+                    className="bg-gray-800 border border-gray-700 text-xs md:text-sm rounded-lg px-2 md:px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[120px] md:max-w-none"
+                    defaultValue=""
+                  >
+                    <option value="" disabled>Assign SM</option>
+                    {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
+                  </select>
+                </div>
+              )}
 
-            <button
-              onClick={() => setSelectedLeadIds([])}
-              className="text-sm text-gray-400 hover:text-white transition-colors ml-2"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
+              <button
+                onClick={() => setSelectedLeadIds([])}
+                className="text-xs md:text-sm text-gray-400 hover:text-white transition-colors ml-1 md:ml-2"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Filters & Search */}
-      <div className="bg-white p-2 rounded-2xl border border-gray-100 shadow-xl shadow-gray-200/50">
-        <div className="flex items-center gap-2">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+        className="bg-white p-2 md:p-3 rounded-2xl border border-gray-100 shadow-xl shadow-gray-200/50"
+      >
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2">
           <div className="flex-1 relative">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
             <input
@@ -781,12 +951,12 @@ export default function LeadManagement() {
               placeholder="Search leads by name or ID"
               value={filters.search}
               onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-              className="w-full pl-12 pr-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-gray-900 focus:bg-white outline-none transition-all"
+              className="w-full pl-12 pr-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-gray-900 focus:bg-white outline-none transition-all text-sm md:text-base"
             />
           </div>
           <button 
             onClick={() => setIsFilterOpen(!isFilterOpen)}
-            className={`flex items-center gap-2 px-6 py-3 rounded-xl border transition-all font-medium ${
+            className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl border transition-all font-medium text-sm md:text-base ${
               isFilterOpen ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
             }`}
           >
@@ -795,8 +965,15 @@ export default function LeadManagement() {
           </button>
         </div>
 
-        {isFilterOpen && (
-          <div className="p-4 mt-2 border-t border-gray-100 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <AnimatePresence>
+          {isFilterOpen && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="p-4 mt-2 border-t border-gray-100 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Project</label>
               <select
@@ -919,8 +1096,10 @@ export default function LeadManagement() {
               </button>
             </div>
           </div>
+          </motion.div>
         )}
-      </div>
+        </AnimatePresence>
+      </motion.div>
 
       {/* Leads Table */}
       <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
@@ -1099,6 +1278,18 @@ export default function LeadManagement() {
                           <Edit3 className="w-5 h-5" />
                         </button>
                       )}
+                      {(isSM || isAdmin) && lead.smId && (
+                        <button 
+                          onClick={() => {
+                            setReturnLeadId(lead.id);
+                            setIsReturnModalOpen(true);
+                          }}
+                          className="p-2 bg-gray-50 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-all"
+                          title="Return to Vendor"
+                        >
+                          <CornerUpLeft className="w-5 h-5" />
+                        </button>
+                      )}
                       {(isAdmin || isVendorManager) && (
                         <button 
                           onClick={() => handleDeleteLead(lead.id)}
@@ -1134,9 +1325,15 @@ export default function LeadManagement() {
       </div>
 
       {/* Edit Lead Modal */}
-      {isEditModalOpen && editLeadData && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <AnimatePresence>
+        {isEditModalOpen && editLeadData && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-2xl w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Edit Lead</h2>
             <form onSubmit={handleEditLeadSubmit} className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1208,14 +1405,21 @@ export default function LeadManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Lost Reason Modal */}
-      {isLostModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
+      <AnimatePresence>
+        {isLostModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+            >
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Mark as Lost</h2>
             <p className="text-sm text-gray-500 mb-6">Please select a reason for marking {lostLeadIds.length > 1 ? 'these leads' : 'this lead'} as lost.</p>
             
@@ -1264,14 +1468,175 @@ export default function LeadManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
+
+      {/* Return to Vendor Modal */}
+      <AnimatePresence>
+        {isReturnModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+            >
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Return Lead to Vendor</h2>
+            <p className="text-sm text-gray-500 mb-6">Please provide a reason for returning this lead. It will be unassigned from you and its status reset to 'New'.</p>
+            
+            <form onSubmit={handleReturnSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Reason for Return</label>
+                <textarea
+                  required
+                  rows={4}
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
+                  placeholder="e.g. Unable to connect after 5 attempts, invalid number..."
+                />
+              </div>
+              <div className="flex gap-4 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsReturnModalOpen(false)}
+                  className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-lg font-bold hover:bg-orange-700"
+                >
+                  Return Lead
+                </button>
+              </div>
+            </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Integrations Modal */}
+      <AnimatePresence>
+        {isIntegrationModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-lg w-full p-6 md:p-8 shadow-2xl"
+            >
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold text-gray-900">Live Integrations</h2>
+              <button onClick={() => setIsIntegrationModalOpen(false)} className="text-gray-400 hover:text-gray-900">
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-6">
+              <div className="bg-gray-50 p-5 rounded-xl border border-gray-200">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 bg-green-100 text-green-600 rounded-lg flex items-center justify-center">
+                    <FileSpreadsheet className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900">Google Sheets Sync</h3>
+                    <p className="text-xs text-gray-500">Automatically pull leads from a published Google Sheet.</p>
+                  </div>
+                </div>
+                
+                <div className="text-sm text-gray-600 mb-4 space-y-2">
+                  <p className="font-bold text-gray-900 text-xs uppercase">How to set up:</p>
+                  <ol className="list-decimal pl-4 space-y-1 text-xs">
+                    <li>Open your Google Sheet containing leads.</li>
+                    <li>Go to <strong>File &gt; Share &gt; Publish to web</strong>.</li>
+                    <li>Select the specific sheet and choose <strong>Comma-separated values (.csv)</strong>.</li>
+                    <li>Click <strong>Publish</strong> and paste the link below.</li>
+                  </ol>
+                  <p className="text-[10px] text-gray-500 mt-2">
+                    * Required columns: <code className="bg-gray-200 px-1 rounded">enquiryId</code>, <code className="bg-gray-200 px-1 rounded">projectId</code>. Optional: <code className="bg-gray-200 px-1 rounded">customerName</code>, <code className="bg-gray-200 px-1 rounded">customerPhone</code>, <code className="bg-gray-200 px-1 rounded">budget</code>, <code className="bg-gray-200 px-1 rounded">possession</code>, <code className="bg-gray-200 px-1 rounded">vendorNotes</code>, <code className="bg-gray-200 px-1 rounded">callRecordingUrl</code>.
+                  </p>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <Link className="h-4 w-4 text-gray-400" />
+                    </div>
+                    <input
+                      type="url"
+                      placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
+                      value={sheetUrl}
+                      onChange={(e) => setSheetUrl(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-green-500 outline-none text-sm"
+                    />
+                  </div>
+                  
+                  <button
+                    onClick={handleSyncSheet}
+                    disabled={isSyncing || !sheetUrl}
+                    className="w-full py-2 bg-green-600 text-white font-bold rounded-lg text-sm hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {isSyncing ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        Syncing...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-4 h-4" />
+                        Sync Now
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {syncResult && (
+                  <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg flex items-start gap-2">
+                    <CheckCircle className="w-5 h-5 text-green-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-bold text-green-900">Sync Complete!</p>
+                      <p className="text-xs text-green-700 mt-1">
+                        Added {syncResult.added} new leads. Skipped {syncResult.skipped} existing leads.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              <div className="bg-gray-50 p-5 rounded-xl border border-gray-200 opacity-75">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center">
+                    <RefreshCw className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-900">Zapier / Webhook API</h3>
+                    <p className="text-xs text-gray-500">Push leads directly from other CRMs.</p>
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  To push leads programmatically, you can use the Firebase Admin SDK or set up a Cloud Function. For now, use the Google Sheets sync above for a no-code live integration.
+                </p>
+              </div>
+            </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Bulk Upload Modal */}
-      {isBulkModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
+      <AnimatePresence>
+        {isBulkModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+            >
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Bulk Upload Leads</h2>
             <p className="text-sm text-gray-500 mb-6">
               Upload a CSV or Excel file with columns: <br/>
@@ -1305,14 +1670,21 @@ export default function LeadManagement() {
                 Cancel
               </button>
             </div>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Drop Lead Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <AnimatePresence>
+        {isModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-lg w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Drop a New Lead</h2>
             <form onSubmit={handleAddLead} className="grid grid-cols-2 gap-4">
               <div className="col-span-2">
@@ -1461,6 +1833,9 @@ export default function LeadManagement() {
                         <p><span className="font-bold text-gray-700">Priority:</span> <span className={`font-bold ${newLead.callAnalysis.priority === 'High' ? 'text-red-600' : newLead.callAnalysis.priority === 'Medium' ? 'text-orange-500' : 'text-blue-500'}`}>{newLead.callAnalysis.priority}</span></p>
                         <p><span className="font-bold text-gray-700">Suggested Score:</span> {newLead.callAnalysis.suggestedScore}</p>
                         <p><span className="font-bold text-gray-700">Summary:</span> {newLead.callAnalysis.summary}</p>
+                        {newLead.callAnalysis.keyTakeaways && (
+                          <p><span className="font-bold text-gray-700">Takeaways:</span> {newLead.callAnalysis.keyTakeaways}</p>
+                        )}
                         <div>
                           <span className="font-bold text-gray-700">Pain Points:</span>
                           <ul className="list-disc pl-5 mt-1 text-gray-600">
@@ -1488,56 +1863,70 @@ export default function LeadManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Status Update Modal */}
-      {isStatusModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Update Status</h2>
-            <p className="text-sm text-gray-500 mb-6">Updating status to: <span className="font-bold text-gray-900 uppercase">{statusUpdate.status.replace(/_/g, ' ')}</span></p>
-            
-            <form onSubmit={handleStatusSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">SM Notes / Comments</label>
-                <textarea
-                  required
-                  rows={4}
-                  value={statusUpdate.notes}
-                  onChange={(e) => setStatusUpdate({ ...statusUpdate, notes: e.target.value })}
-                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
-                  placeholder="Provide details about this status change..."
-                />
-              </div>
-              <div className="flex gap-4 mt-8">
-                <button
-                  type="button"
-                  onClick={() => setIsStatusModalOpen(false)}
-                  className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800"
-                >
-                  Update Status
-                </button>
-              </div>
-            </form>
+      <AnimatePresence>
+        {isStatusModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-6 md:p-8 shadow-2xl"
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Update Status</h2>
+              <p className="text-sm text-gray-500 mb-6">Updating status to: <span className="font-bold text-gray-900 uppercase">{statusUpdate.status.replace(/_/g, ' ')}</span></p>
+              
+              <form onSubmit={handleStatusSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">SM Notes / Comments</label>
+                  <textarea
+                    required
+                    rows={4}
+                    value={statusUpdate.notes}
+                    onChange={(e) => setStatusUpdate({ ...statusUpdate, notes: e.target.value })}
+                    className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
+                    placeholder="Provide details about this status change..."
+                  />
+                </div>
+                <div className="flex gap-4 mt-8">
+                  <button
+                    type="button"
+                    onClick={() => setIsStatusModalOpen(false)}
+                    className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800"
+                  >
+                    Update Status
+                  </button>
+                </div>
+              </form>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Feedback Modal */}
-      {selectedLead && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl">
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Lead Feedback</h2>
-            <div className="flex justify-between items-center mb-6">
-              <p className="text-sm text-gray-500">For: {selectedLead.customerName} ({selectedLead.enquiryId})</p>
+      <AnimatePresence>
+        {selectedLead && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-2xl w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Lead Feedback</h2>
+              <div className="flex justify-between items-center mb-6">
+                <p className="text-sm text-gray-500">For: {selectedLead.customerName} ({selectedLead.enquiryId})</p>
               {(() => {
                 const { total, breakdown } = calculateLeadScore(selectedLead);
                 return (
@@ -1589,6 +1978,9 @@ export default function LeadManagement() {
                       <p><span className="font-bold text-gray-700">Priority:</span> <span className={`font-bold ${selectedLead.callAnalysis.priority === 'High' ? 'text-red-600' : selectedLead.callAnalysis.priority === 'Medium' ? 'text-orange-500' : 'text-blue-500'}`}>{selectedLead.callAnalysis.priority}</span></p>
                       <p><span className="font-bold text-gray-700">Suggested Score:</span> {selectedLead.callAnalysis.suggestedScore}</p>
                       <p><span className="font-bold text-gray-700">Summary:</span> {selectedLead.callAnalysis.summary}</p>
+                      {selectedLead.callAnalysis.keyTakeaways && (
+                        <p><span className="font-bold text-gray-700">Takeaways:</span> {selectedLead.callAnalysis.keyTakeaways}</p>
+                      )}
                       <div>
                         <span className="font-bold text-gray-700">Pain Points:</span>
                         <ul className="list-disc pl-5 mt-1 text-gray-600">
@@ -1615,6 +2007,8 @@ export default function LeadManagement() {
                     <div className="grid grid-cols-2 gap-2">
                       <input
                         type="date"
+                        required
+                        min={new Date().toISOString().split('T')[0]}
                         value={newTask.dueDate}
                         onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })}
                         className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
@@ -1762,9 +2156,10 @@ export default function LeadManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }

@@ -56,10 +56,14 @@ export default function LeadManagement() {
     notes: ''
   });
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [leadToDelete, setLeadToDelete] = useState<string | null>(null);
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [returnLeadId, setReturnLeadId] = useState('');
   const [returnReason, setReturnReason] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [feedbackRecordingFile, setFeedbackRecordingFile] = useState<File | null>(null);
+  const [isUploadingFeedbackRecording, setIsUploadingFeedbackRecording] = useState(false);
   const [feedbackView, setFeedbackView] = useState<'vendor' | 'sm' | 'tasks'>('vendor');
   const [smViewMode, setSmViewMode] = useState<'all' | 'my'>('my');
   const [tasks, setTasks] = useState<any[]>([]);
@@ -508,13 +512,21 @@ export default function LeadManagement() {
     }
   };
 
-  const handleDeleteLead = async (leadId: string) => {
-    if (!window.confirm('Are you sure you want to delete this lead?')) return;
+  const handleDeleteLead = async () => {
+    if (!leadToDelete) return;
     try {
-      await deleteDoc(doc(db, 'leads', leadId));
+      await deleteDoc(doc(db, 'leads', leadToDelete));
+      setIsDeleteModalOpen(false);
+      setLeadToDelete(null);
+      showToast('Lead deleted successfully.', 'success');
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `leads/${leadId}`);
+      handleFirestoreError(error, OperationType.DELETE, `leads/${leadToDelete}`);
     }
+  };
+
+  const confirmDeleteLead = (leadId: string) => {
+    setLeadToDelete(leadId);
+    setIsDeleteModalOpen(true);
   };
 
   const handleUpdateStatus = (leadId: string, status: string) => {
@@ -688,21 +700,45 @@ export default function LeadManagement() {
 
   const handleAddFeedback = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedLead || !feedback) return;
+    if (!selectedLead || (!feedback && !feedbackRecordingFile)) return;
 
     try {
+      let recordingUrl = '';
+      if (feedbackRecordingFile) {
+        setIsUploadingFeedbackRecording(true);
+        const storageRef = ref(storage, `recordings/${Date.now()}_${feedbackRecordingFile.name}`);
+        const snapshot = await uploadBytes(storageRef, feedbackRecordingFile);
+        recordingUrl = await getDownloadURL(snapshot.ref);
+        setIsUploadingFeedbackRecording(false);
+      }
+
       const leadRef = doc(db, 'leads', selectedLead.id);
+      
+      const updateData: any = { updatedAt: serverTimestamp() };
+      
       if (isSM || isAdmin) {
-        await updateDoc(leadRef, { smFeedback: feedback, updatedAt: serverTimestamp() });
+        if (feedback) updateData.smFeedback = feedback;
       } else if (isPartner || isVendor) {
-        await updateDoc(leadRef, { 
-          partnerFeedback: arrayUnion(`${new Date().toLocaleString()}: ${feedback}`),
-          updatedAt: serverTimestamp() 
+        if (feedback) {
+          updateData.partnerFeedback = arrayUnion(`${new Date().toLocaleString()}: ${feedback}`);
+        }
+      }
+
+      if (recordingUrl) {
+        updateData.additionalRecordings = arrayUnion({
+          url: recordingUrl,
+          addedAt: new Date().toISOString(),
+          addedBy: profile?.displayName || 'Unknown'
         });
       }
+
+      await updateDoc(leadRef, updateData);
+      
       setFeedback('');
+      setFeedbackRecordingFile(null);
       setSelectedLead(null);
     } catch (error) {
+      setIsUploadingFeedbackRecording(false);
       handleFirestoreError(error, OperationType.UPDATE, `leads/${selectedLead.id}`);
     }
   };
@@ -901,7 +937,7 @@ export default function LeadManagement() {
                   <select
                     onChange={(e) => handleBulkStatusUpdate(e.target.value)}
                     className="bg-gray-800 border border-gray-700 text-xs md:text-sm rounded-lg px-2 md:px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[120px] md:max-w-none"
-                    defaultValue=""
+                    value=""
                   >
                     <option value="" disabled>Status</option>
                     {settings.statuses.map((s: string) => (
@@ -917,7 +953,7 @@ export default function LeadManagement() {
                   <select
                     onChange={(e) => handleBulkAssignSM(e.target.value)}
                     className="bg-gray-800 border border-gray-700 text-xs md:text-sm rounded-lg px-2 md:px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[120px] md:max-w-none"
-                    defaultValue=""
+                    value=""
                   >
                     <option value="" disabled>Assign SM</option>
                     {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
@@ -1292,7 +1328,7 @@ export default function LeadManagement() {
                       )}
                       {(isAdmin || isVendorManager) && (
                         <button 
-                          onClick={() => handleDeleteLead(lead.id)}
+                          onClick={() => confirmDeleteLead(lead.id)}
                           className="p-2 bg-gray-50 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
                           title="Delete Lead"
                         >
@@ -1514,6 +1550,48 @@ export default function LeadManagement() {
                 </button>
               </div>
             </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {isDeleteModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+            >
+              <div className="flex flex-col items-center text-center">
+                <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-4">
+                  <Trash2 className="w-8 h-8" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Delete Lead?</h2>
+                <p className="text-sm text-gray-500 mb-8">
+                  Are you sure you want to delete this lead? This action cannot be undone.
+                </p>
+                <div className="flex gap-4 w-full">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsDeleteModalOpen(false);
+                      setLeadToDelete(null);
+                    }}
+                    className="flex-1 px-4 py-3 border border-gray-200 text-gray-600 rounded-xl font-bold hover:bg-gray-50 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeleteLead}
+                    className="flex-1 px-4 py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
+                  >
+                    Delete Lead
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}
@@ -1971,7 +2049,7 @@ export default function LeadManagement() {
             <div className="max-h-80 overflow-y-auto mb-6 space-y-4">
               {selectedLead.callRecordingUrl && (
                 <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-4">
-                  <h4 className="text-sm font-bold text-gray-900 mb-2">Call Recording</h4>
+                  <h4 className="text-sm font-bold text-gray-900 mb-2">Initial Call Recording</h4>
                   <audio controls src={selectedLead.callRecordingUrl} className="w-full h-8 mb-3" />
                   {selectedLead.callAnalysis && (
                     <div className="text-sm space-y-2 mt-3 pt-3 border-t border-blue-200">
@@ -1989,6 +2067,22 @@ export default function LeadManagement() {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {selectedLead.additionalRecordings?.length > 0 && (
+                <div className="space-y-3 mb-4">
+                  <h4 className="text-sm font-bold text-gray-900">Additional Call Recordings</h4>
+                  {selectedLead.additionalRecordings.map((rec: any, i: number) => (
+                    <div key={i} className="bg-gray-50 p-3 rounded-xl border border-gray-200">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-xs font-bold text-gray-500">Attempt {i + 2}</span>
+                        <span className="text-[10px] text-gray-400">{new Date(rec.addedAt).toLocaleString()}</span>
+                      </div>
+                      <audio controls src={rec.url} className="w-full h-8" />
+                      <p className="text-[10px] text-gray-400 mt-2 text-right">Added by: {rec.addedBy}</p>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -2132,7 +2226,6 @@ export default function LeadManagement() {
                   {isSM || isAdmin ? 'Update SM Feedback' : 'Add Partner Feedback'}
                 </label>
                 <textarea
-                  required
                   rows={4}
                   value={feedback}
                   onChange={(e) => setFeedback(e.target.value)}
@@ -2140,19 +2233,50 @@ export default function LeadManagement() {
                   placeholder="Enter your update here..."
                 />
               </div>
+              
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Add Call Recording (Optional)</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    onChange={(e) => setFeedbackRecordingFile(e.target.files?.[0] || null)}
+                    className="hidden"
+                    id="feedback-recording-upload"
+                  />
+                  <label
+                    htmlFor="feedback-recording-upload"
+                    className="flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg cursor-pointer hover:bg-gray-200 transition-all text-sm font-bold"
+                  >
+                    <Upload className="w-4 h-4" />
+                    {feedbackRecordingFile ? 'Change File' : 'Upload Audio'}
+                  </label>
+                  {feedbackRecordingFile && (
+                    <span className="text-xs text-gray-500 truncate max-w-[200px]">
+                      {feedbackRecordingFile.name}
+                    </span>
+                  )}
+                </div>
+              </div>
+
               <div className="flex gap-4 mt-6">
                 <button
                   type="button"
-                  onClick={() => setSelectedLead(null)}
+                  onClick={() => {
+                    setSelectedLead(null);
+                    setFeedbackRecordingFile(null);
+                  }}
                   className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
                 >
                   Close
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800"
+                  disabled={isUploadingFeedbackRecording || (!feedback && !feedbackRecordingFile)}
+                  className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800 disabled:opacity-50 flex items-center justify-center gap-2"
                 >
-                  Save Update
+                  {isUploadingFeedbackRecording && <RefreshCw className="w-4 h-4 animate-spin" />}
+                  {isUploadingFeedbackRecording ? 'Saving...' : 'Save Update'}
                 </button>
               </div>
             </form>

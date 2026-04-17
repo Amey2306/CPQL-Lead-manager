@@ -44,9 +44,12 @@
         "customerPhone": { "type": "string" },
         "budget": { "type": "number" },
         "possession": { "type": "string" },
-        "status": { "type": "string", "enum": ["new", "assigned", "contacted", "site_visit", "converted", "lost"] },
+        "status": { "type": "string", "enum": ["new", "assigned", "contacted", "site_visit", "converted", "lost", "returned_to_vendor"] },
         "smFeedback": { "type": "string" },
         "partnerFeedback": { "type": "array", "items": { "type": "string" } },
+        "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "callAnalysis": { "type": "object" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

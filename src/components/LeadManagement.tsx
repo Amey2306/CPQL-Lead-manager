@@ -1,15 +1,57 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, where, arrayUnion, writeBatch, deleteDoc, getDocs, setDoc, getDoc } from 'firebase/firestore';
+import { collection, onSnapshot, query, addDoc, updateDoc, doc, serverTimestamp, where, arrayUnion, writeBatch, deleteDoc, getDocs, setDoc, getDoc, getDocFromServer } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage, handleFirestoreError, OperationType } from '../firebase';
-import { analyzeCallRecordingUrl, analyzeCallRecording } from '../services/geminiService';
+import { analyzeCallRecordingUrl, analyzeCallRecording, chatWithGemini, suggestFollowUpReminders, generateCollectiveCallSummary, transcribeAudio } from '../services/geminiService';
 import { useAuth } from '../AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Search, Filter, MessageSquare, Edit3, CheckCircle, XCircle, Upload, FileSpreadsheet, FileText as FileIcon, Check, User, Calendar, Clock, CheckSquare, Trash2, ChevronUp, ChevronDown, RefreshCw, Link, CornerUpLeft } from 'lucide-react';
+import { Plus, Search, Filter, MessageSquare, Edit2, Edit3, CheckCircle, XCircle, Upload, FileSpreadsheet, FileText, Check, User, Calendar, Clock, CheckSquare, Trash2, ChevronUp, ChevronDown, RefreshCw, Link, CornerUpLeft, X, Download, Send, Bot, Sparkles, Phone, Mail, Mic, Square } from 'lucide-react';
 import Papa from 'papaparse';
 
 import * as XLSX from 'xlsx';
 import { showToast } from './ErrorBoundary';
+
+const TagInput = ({ tags, onChange, placeholder = "Add tag..." }: { tags: string[], onChange: (tags: string[]) => void, placeholder?: string }) => {
+  const [input, setInput] = useState('');
+
+  const addTag = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && input.trim()) {
+      e.preventDefault();
+      if (!tags.includes(input.trim())) {
+        onChange([...tags, input.trim()]);
+      }
+      setInput('');
+    }
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    onChange(tags.filter(tag => tag !== tagToRemove));
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {tags.map(tag => (
+          <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-lg border border-indigo-100">
+            {tag}
+            <button type="button" onClick={() => removeTag(tag)} className="hover:text-indigo-900">
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+      <input
+        type="text"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={addTag}
+        placeholder={placeholder}
+        className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+      />
+    </div>
+  );
+};
+
 export default function LeadManagement() {
   const { profile, isAdmin, isSM, isPartner, isVendor, isVendorManager, isVendorEditor } = useAuth();
   const [leads, setLeads] = useState<any[]>([]);
@@ -18,7 +60,7 @@ export default function LeadManagement() {
   const [admins, setAdmins] = useState<any[]>([]);
   const [partners, setPartners] = useState<any[]>([]);
   const [settings, setSettings] = useState<any>({
-    statuses: ['new', 'assigned', 'contacted', 'site_visit_proposed', 'site_visit_done', 'converted', 'lost'],
+    statuses: ['new', 'assigned', 'contacted', 'site_visit_proposed', 'site_visit_done', 'converted', 'lost', 'returned_to_vendor'],
     lostReasons: ['not contacted', 'not interested', 'budget not matched', 'location not matched', 'purchased elsewhere']
   });
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -36,13 +78,23 @@ export default function LeadManagement() {
     projectId: '',
     customerName: '',
     customerPhone: '',
+    customerEmail: '',
+    livingLocation: '',
+    gender: '',
+    companyName: '',
+    profession: '',
+    designation: '',
+    linkedinProfile: '',
+    clientType: 'end_user', // investor or end_user
+    priority: 'Medium',
     budget: 0,
     possession: '',
     status: 'new',
     vendorNotes: '',
     partnerId: '',
     callRecordingUrl: '',
-    callAnalysis: null as any
+    callAnalysis: null as any,
+    tags: [] as string[]
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [recordingFile, setRecordingFile] = useState<File | null>(null);
@@ -63,12 +115,23 @@ export default function LeadManagement() {
   const [returnReason, setReturnReason] = useState('');
   const [feedback, setFeedback] = useState('');
   const [feedbackRecordingFile, setFeedbackRecordingFile] = useState<File | null>(null);
+  const [feedbackCloudUrl, setFeedbackCloudUrl] = useState('');
   const [isUploadingFeedbackRecording, setIsUploadingFeedbackRecording] = useState(false);
-  const [feedbackView, setFeedbackView] = useState<'vendor' | 'sm' | 'tasks'>('vendor');
+  const [followUpSuggestions, setFollowUpSuggestions] = useState<any[]>([]);
+  const [isSuggestingFollowUps, setIsSuggestingFollowUps] = useState(false);
+  const [collectiveCallSummary, setCollectiveCallSummary] = useState<any>(null);
+  const [isGeneratingCollectiveSummary, setIsGeneratingCollectiveSummary] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const [feedbackView, setFeedbackView] = useState<'vendor' | 'sm' | 'tasks' | 'call_analysis'>('vendor');
   const [smViewMode, setSmViewMode] = useState<'all' | 'my'>('my');
   const [tasks, setTasks] = useState<any[]>([]);
   const [allTasks, setAllTasks] = useState<any[]>([]);
   const [newTask, setNewTask] = useState({ title: '', dueDate: new Date().toISOString().split('T')[0], assignedTo: '' });
+  const [bulkUploadProject, setBulkUploadProject] = useState('');
+  const [bulkUploadVendor, setBulkUploadVendor] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -84,20 +147,42 @@ export default function LeadManagement() {
     scoreMax: '',
     taskDateFrom: '',
     taskDateTo: '',
+    tags: '',
   });
   const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'desc' });
 
   useEffect(() => {
     if (profile?.uid) {
-      getDoc(doc(db, 'integrations', profile.uid)).then(docSnap => {
+      // Using getDocFromServer as a connection test as per requirements
+      getDocFromServer(doc(db, 'integrations', profile.uid)).then(docSnap => {
         if (docSnap.exists()) {
           setSheetUrl(docSnap.data().googleSheetUrl || '');
         }
       }).catch(error => {
-        console.error("Error fetching integration settings:", error);
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. The client is offline.");
+        } else {
+          console.error("Error fetching integration settings:", error);
+        }
       });
     }
   }, [profile]);
+
+  useEffect(() => {
+    setFollowUpSuggestions([]);
+  }, [selectedLead?.id]);
+
+  useEffect(() => {
+    if (selectedLead) {
+      const updatedLead = leads.find(l => l.id === selectedLead.id);
+      if (updatedLead) {
+        // Sync to ensure side panel shows latest updates (status, analysis, etc.)
+        if (JSON.stringify(updatedLead) !== JSON.stringify(selectedLead)) {
+          setSelectedLead(updatedLead);
+        }
+      }
+    }
+  }, [leads, selectedLead?.id]);
 
   useEffect(() => {
     if (!profile) return;
@@ -236,10 +321,15 @@ export default function LeadManagement() {
       'contacted': 15,
       'assigned': 12,
       'new': 10,
+      'returned_to_vendor': 5,
       'lost': 0
     };
     breakdown.status = statusScores[lead.status] || 0;
     score += breakdown.status;
+
+    // 4. Priority Bonus
+    if (lead.priority === 'High') score += 10;
+    else if (lead.priority === 'Medium') score += 5;
 
     let finalScore = Math.min(score, 100);
     if (lead.callAnalysis?.suggestedScore) {
@@ -249,8 +339,11 @@ export default function LeadManagement() {
     return { total: finalScore, breakdown };
   };
 
-  const handleAnalyzeRecording = async () => {
-    if (!newLead.callRecordingUrl && !recordingFile) {
+  const handleAnalyzeRecording = async (mode: 'new' | 'edit' = 'new') => {
+    const targetData = mode === 'new' ? newLead : editLeadData;
+    const setter = mode === 'new' ? setNewLead : setEditLeadData;
+
+    if (!targetData.callRecordingUrl && !recordingFile) {
       showToast('Please provide a URL or upload a file first.', 'info');
       return;
     }
@@ -264,7 +357,7 @@ export default function LeadManagement() {
         const fileRef = ref(storage, `recordings/${Date.now()}_${recordingFile.name}`);
         await uploadBytes(fileRef, recordingFile);
         const urlToAnalyze = await getDownloadURL(fileRef);
-        setNewLead(prev => ({ ...prev, callRecordingUrl: urlToAnalyze }));
+        setter((prev: any) => ({ ...prev, callRecordingUrl: urlToAnalyze }));
 
         // Convert file to base64 for Gemini analysis
         const base64 = await new Promise<string>((resolve, reject) => {
@@ -279,13 +372,122 @@ export default function LeadManagement() {
         
         analysis = await analyzeCallRecording(base64, recordingFile.type || 'audio/mp3');
       } else {
-        analysis = await analyzeCallRecordingUrl(newLead.callRecordingUrl);
+        analysis = await analyzeCallRecordingUrl(targetData.callRecordingUrl);
       }
 
-      setNewLead(prev => ({ ...prev, callAnalysis: analysis }));
+      setter((prev: any) => ({ ...prev, callAnalysis: analysis }));
+      showToast('Recording analyzed successfully!', 'success');
     } catch (error) {
       console.error('Error analyzing recording:', error);
-      showToast('Failed to analyze recording. Please check the URL or file and try again.', 'error');
+      showToast(error instanceof Error ? error.message : 'Failed to analyze recording.', 'error');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleGenerateCollectiveSummary = async () => {
+    if (sortedLeads.length === 0) {
+      showToast('No leads available to summarize.', 'info');
+      return;
+    }
+
+    const leadsWithAnalyses = sortedLeads.filter(l => l.callAnalysis);
+    if (leadsWithAnalyses.length === 0) {
+      showToast('No call recordings analyzed for these leads yet.', 'info');
+      return;
+    }
+
+    setIsGeneratingCollectiveSummary(true);
+    try {
+      const summary = await generateCollectiveCallSummary(sortedLeads);
+      setCollectiveCallSummary(summary);
+      showToast('Project intelligence summary generated!', 'success');
+    } catch (error) {
+      console.error('Error generating collective summary:', error);
+      showToast('Failed to generate collective summary.', 'error');
+    } finally {
+      setIsGeneratingCollectiveSummary(false);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await handleTranscription(audioBlob);
+        // Stop all tracks to release the microphone
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      showToast('Microphone access denied or not available.', 'error');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const handleTranscription = async (blob: Blob) => {
+    setIsTranscribing(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = reject;
+      });
+
+      const transcript = await transcribeAudio(base64, blob.type);
+      setStatusUpdate(prev => ({ 
+        ...prev, 
+        notes: prev.notes ? `${prev.notes}\n\n[Voice Note]: ${transcript}` : `[Voice Note]: ${transcript}` 
+      }));
+      showToast('Voice note transcribed!', 'success');
+    } catch (error) {
+      console.error('Error transcribing voice note:', error);
+      showToast('Failed to transcribe voice note.', 'error');
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
+  const handleAnalyzeSelectedLeadRecording = async () => {
+    if (!selectedLead || !selectedLead.callRecordingUrl) return;
+
+    setIsAnalyzing(true);
+    try {
+      const analysis = await analyzeCallRecordingUrl(selectedLead.callRecordingUrl);
+      
+      const leadRef = doc(db, 'leads', selectedLead.id);
+      await updateDoc(leadRef, {
+        callAnalysis: analysis,
+        priority: analysis.priority || selectedLead.priority,
+        tags: [...new Set([...(selectedLead.tags || []), ...(analysis.tags || [])])],
+        updatedAt: serverTimestamp()
+      });
+      
+      showToast('Lead intelligence generated!', 'success');
+    } catch (error) {
+      console.error('Error analyzing selected lead:', error);
+      showToast('Failed to analyze recording.', 'error');
     } finally {
       setIsAnalyzing(false);
     }
@@ -310,6 +512,8 @@ export default function LeadManagement() {
       await addDoc(collection(db, 'leads'), {
         ...newLead,
         callRecordingUrl: finalRecordingUrl,
+        priority: newLead.priority || newLead.callAnalysis?.priority || 'Medium',
+        tags: [...(newLead.tags || []), ...(newLead.callAnalysis?.tags || [])].filter((v, i, a) => a.indexOf(v) === i),
         partnerId: selectedPartner?.uid,
         partnerName: selectedPartner?.displayName,
         createdAt: serverTimestamp(),
@@ -323,7 +527,29 @@ export default function LeadManagement() {
         }]
       });
       setIsModalOpen(false);
-      setNewLead({ enquiryId: '', projectId: '', customerName: '', customerPhone: '', budget: 0, possession: '', status: 'new', vendorNotes: '', partnerId: '', callRecordingUrl: '', callAnalysis: null });
+      setNewLead({ 
+        enquiryId: '', 
+        projectId: '', 
+        customerName: '', 
+        customerPhone: '', 
+        customerEmail: '',
+        livingLocation: '',
+        gender: '',
+        companyName: '',
+        profession: '',
+        designation: '',
+        linkedinProfile: '',
+        clientType: 'end_user',
+        priority: 'Medium',
+        budget: 0, 
+        possession: '', 
+        status: 'new', 
+        vendorNotes: '', 
+        partnerId: '', 
+        callRecordingUrl: '', 
+        callAnalysis: null, 
+        tags: [] 
+      });
       setRecordingFile(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'leads');
@@ -358,26 +584,40 @@ export default function LeadManagement() {
 
   const processBulkData = async (data: any[]) => {
     if (!profile) return;
+    if (!bulkUploadProject) {
+      showToast('Please select a project before uploading.', 'error');
+      return;
+    }
+
     const batch = writeBatch(db);
     const leadsRef = collection(db, 'leads');
+    const selectedVendor = partners.find(p => p.uid === bulkUploadVendor);
 
     data.forEach((row) => {
-      if (!row.enquiryId || !row.projectId) return;
+      if (!row.enquiryId) return;
       
       const newDocRef = doc(leadsRef);
       batch.set(newDocRef, {
         enquiryId: String(row.enquiryId),
-        projectId: String(row.projectId),
+        projectId: bulkUploadProject,
         customerName: String(row.customerName || ''),
         customerPhone: String(row.customerPhone || ''),
+        customerEmail: String(row.customerEmail || ''),
+        livingLocation: String(row.livingLocation || ''),
+        gender: String(row.gender || ''),
+        companyName: String(row.companyName || ''),
+        profession: String(row.profession || ''),
+        designation: String(row.designation || ''),
+        linkedinProfile: String(row.linkedinProfile || ''),
+        clientType: String(row.clientType || 'end_user'),
         budget: Number(row.budget) || 0,
         possession: String(row.possession || ''),
         status: 'new',
         vendorNotes: String(row.vendorNotes || ''),
         callRecordingUrl: String(row.callRecordingUrl || ''),
         callAnalysis: null,
-        partnerId: profile.vendorCompanyId || profile.uid,
-        partnerName: profile.displayName,
+        partnerId: bulkUploadVendor || profile.vendorCompanyId || profile.uid,
+        partnerName: selectedVendor?.displayName || profile.displayName,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         partnerFeedback: [],
@@ -446,6 +686,14 @@ export default function LeadManagement() {
               projectId: String(row.projectId),
               customerName: String(row.customerName || ''),
               customerPhone: String(row.customerPhone || ''),
+              customerEmail: String(row.customerEmail || ''),
+              livingLocation: String(row.livingLocation || ''),
+              gender: String(row.gender || ''),
+              companyName: String(row.companyName || ''),
+              profession: String(row.profession || ''),
+              designation: String(row.designation || ''),
+              linkedinProfile: String(row.linkedinProfile || ''),
+              clientType: String(row.clientType || 'end_user'),
               budget: Number(row.budget) || 0,
               possession: String(row.possession || ''),
               status: 'new',
@@ -501,8 +749,20 @@ export default function LeadManagement() {
       await updateDoc(doc(db, 'leads', editLeadData.id), {
         customerName: editLeadData.customerName,
         customerPhone: editLeadData.customerPhone,
+        customerEmail: editLeadData.customerEmail || '',
+        livingLocation: editLeadData.livingLocation || '',
+        gender: editLeadData.gender || '',
+        companyName: editLeadData.companyName || '',
+        profession: editLeadData.profession || '',
+        designation: editLeadData.designation || '',
+        linkedinProfile: editLeadData.linkedinProfile || '',
+        clientType: editLeadData.clientType || 'end_user',
+        priority: editLeadData.priority || 'Medium',
         budget: editLeadData.budget,
         possession: editLeadData.possession,
+        callRecordingUrl: editLeadData.callRecordingUrl || '',
+        callAnalysis: editLeadData.callAnalysis || null,
+        tags: editLeadData.tags || [],
         updatedAt: serverTimestamp()
       });
       setIsEditModalOpen(false);
@@ -607,7 +867,7 @@ export default function LeadManagement() {
     try {
       await updateDoc(doc(db, 'leads', returnLeadId), {
         smId: '',
-        status: 'new',
+        status: 'returned_to_vendor',
         updatedAt: serverTimestamp(),
         statusHistory: arrayUnion({
           status: 'returned_to_vendor',
@@ -700,16 +960,41 @@ export default function LeadManagement() {
 
   const handleAddFeedback = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedLead || (!feedback && !feedbackRecordingFile)) return;
+    if (!selectedLead || (!feedback && !feedbackRecordingFile && !feedbackCloudUrl)) return;
 
     try {
-      let recordingUrl = '';
+      let recordingUrl = feedbackCloudUrl;
+      let analysis = null;
+
       if (feedbackRecordingFile) {
         setIsUploadingFeedbackRecording(true);
         const storageRef = ref(storage, `recordings/${Date.now()}_${feedbackRecordingFile.name}`);
         const snapshot = await uploadBytes(storageRef, feedbackRecordingFile);
         recordingUrl = await getDownloadURL(snapshot.ref);
+
+        // Analyze feedback recording if possible
+        try {
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(feedbackRecordingFile);
+            reader.onload = () => {
+              const result = reader.result as string;
+              resolve(result.split(',')[1]);
+            };
+            reader.onerror = error => reject(error);
+          });
+          analysis = await analyzeCallRecording(base64, feedbackRecordingFile.type || 'audio/mp3');
+        } catch (err) {
+          console.error("Feedback recording analysis failed", err);
+        }
+        
         setIsUploadingFeedbackRecording(false);
+      } else if (feedbackCloudUrl) {
+        try {
+          analysis = await analyzeCallRecordingUrl(feedbackCloudUrl);
+        } catch (err) {
+          console.error("Feedback cloud URL analysis failed", err);
+        }
       }
 
       const leadRef = doc(db, 'leads', selectedLead.id);
@@ -728,15 +1013,29 @@ export default function LeadManagement() {
         updateData.additionalRecordings = arrayUnion({
           url: recordingUrl,
           addedAt: new Date().toISOString(),
-          addedBy: profile?.displayName || 'Unknown'
+          addedBy: profile?.displayName || 'Unknown',
+          analysis: analysis
         });
+      }
+
+      // Update lead priority and tags if analysis found something new
+      if (analysis) {
+        if (analysis.priority) updateData.priority = analysis.priority;
+        if (analysis.tags) updateData.tags = arrayUnion(...analysis.tags);
+        // Also update main call analysis if it doesn't exist yet
+        if (!selectedLead.callAnalysis) {
+          updateData.callAnalysis = analysis;
+        }
       }
 
       await updateDoc(leadRef, updateData);
       
       setFeedback('');
       setFeedbackRecordingFile(null);
-      setSelectedLead(null);
+      setFeedbackCloudUrl('');
+      // Update local state to reflect changes without closing the slide-over
+      setSelectedLead((prev: any) => ({ ...prev, ...updateData }));
+      showToast('Feedback and analysis saved successfully.', 'success');
     } catch (error) {
       setIsUploadingFeedbackRecording(false);
       handleFirestoreError(error, OperationType.UPDATE, `leads/${selectedLead.id}`);
@@ -748,6 +1047,45 @@ export default function LeadManagement() {
       key,
       direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
     }));
+  };
+
+  const handleGetFollowUpSuggestions = async (lead: any) => {
+    setIsSuggestingFollowUps(true);
+    try {
+      const result = await suggestFollowUpReminders(lead);
+      setFollowUpSuggestions(result.suggestions || []);
+    } catch (error) {
+      console.error('Error getting follow-up suggestions:', error);
+      showToast('Failed to get AI follow-up suggestions.', 'error');
+    } finally {
+      setIsSuggestingFollowUps(false);
+    }
+  };
+
+  const handleScheduleSuggestion = async (suggestion: any, lead: any) => {
+    try {
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + (suggestion.suggestedDaysFromNow || 1));
+      
+      await addDoc(collection(db, 'tasks'), {
+        leadId: lead.id,
+        leadName: lead.customerName,
+        title: suggestion.title,
+        description: suggestion.description,
+        type: suggestion.type || 'call',
+        dueDate: dueDate.toISOString(),
+        status: 'pending',
+        priority: lead.priority || 'Medium',
+        createdAt: serverTimestamp(),
+        createdBy: profile?.uid,
+        assignedTo: lead.smId || profile?.uid
+      });
+      
+      showToast('Follow-up scheduled successfully!', 'success');
+      setFollowUpSuggestions(prev => prev.filter(s => s !== suggestion));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'tasks');
+    }
   };
 
   const filteredLeads = leads.filter(lead => {
@@ -786,12 +1124,26 @@ export default function LeadManagement() {
       });
       if (!hasMatchingTask) return false;
     }
+
+    if (filters.tags) {
+      const tagSearch = filters.tags.toLowerCase();
+      const leadTags = lead.tags || [];
+      if (!leadTags.some((tag: string) => tag.toLowerCase().includes(tagSearch))) {
+        return false;
+      }
+    }
+
     return true;
   });
 
   const sortedLeads = [...filteredLeads].sort((a, b) => {
     let valA, valB;
     switch (sortConfig.key) {
+      case 'priority':
+        const priorityMap: { [key: string]: number } = { 'High': 3, 'Medium': 2, 'Low': 1 };
+        valA = priorityMap[a.priority] || 0;
+        valB = priorityMap[b.priority] || 0;
+        break;
       case 'score':
         valA = calculateLeadScore(a).total;
         valB = calculateLeadScore(b).total;
@@ -817,6 +1169,37 @@ export default function LeadManagement() {
     if (valA > valB) return sortConfig.direction === 'asc' ? 1 : -1;
     return 0;
   });
+
+  const handleExportLeads = () => {
+    const exportData = sortedLeads.map(lead => {
+      const project = projects.find(p => p.id === lead.projectId);
+      const sm = sms.find(s => s.uid === lead.smId);
+      const partner = partners.find(p => p.uid === lead.partnerId);
+      const score = calculateLeadScore(lead).total;
+
+      return {
+        'Enquiry ID': lead.enquiryId || '',
+        'Project': project ? project.name : (lead.projectId || ''),
+        'Customer Name': lead.customerName || '',
+        'Customer Phone': lead.customerPhone || '',
+        'Budget': lead.budget || 0,
+        'Possession': lead.possession || '',
+        'Status': lead.status || '',
+        'Score': score,
+        'Assigned SM': sm ? sm.displayName : 'Unassigned',
+        'Partner/Vendor': partner ? partner.displayName : 'Unassigned',
+        'Vendor Notes': lead.vendorNotes || '',
+        'Partner Feedback': lead.partnerFeedback ? lead.partnerFeedback.join(' | ') : '',
+        'SM General Feedback': lead.smFeedback || '',
+        'Created At': lead.createdAt?.toDate ? lead.createdAt.toDate().toLocaleString() : new Date(lead.createdAt).toLocaleString()
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Leads");
+    XLSX.writeFile(wb, `leads_export_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
 
   if (!profile) return <div className="p-8 text-center text-gray-500">Loading...</div>;
 
@@ -857,31 +1240,44 @@ export default function LeadManagement() {
               </button>
             </div>
           )}
-          {(isPartner || isVendor || isAdmin) && (
-            <div className="flex flex-wrap gap-2 w-full md:w-auto">
-              <button
-                onClick={() => setIsIntegrationModalOpen(true)}
-                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
-              >
-                <RefreshCw className="w-4 h-4 md:w-5 md:h-5" />
-                <span className="hidden sm:inline">Integrations</span>
-              </button>
-              <button
-                onClick={() => setIsBulkModalOpen(true)}
-                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
-              >
-                <Upload className="w-4 h-4 md:w-5 md:h-5" />
-                <span className="hidden sm:inline">Bulk Upload</span>
-              </button>
-              <button
-                onClick={() => setIsModalOpen(true)}
-                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-gray-900 text-white px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg hover:shadow-xl active:scale-95 text-sm md:text-base"
-              >
-                <Plus className="w-4 h-4 md:w-5 md:h-5" />
-                Drop Lead
-              </button>
-            </div>
-          )}
+          <div className="flex flex-wrap gap-2 w-full md:w-auto">
+            <button
+              onClick={handleExportLeads}
+              className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
+            >
+              <Download className="w-4 h-4 md:w-5 md:h-5" />
+              <span className="hidden sm:inline">Export</span>
+            </button>
+            {(isPartner || isVendor || isAdmin) && (
+              <>
+                <button
+                  onClick={() => setIsIntegrationModalOpen(true)}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
+                >
+                  <RefreshCw className="w-4 h-4 md:w-5 md:h-5" />
+                  <span className="hidden sm:inline">Integrations</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setBulkUploadProject('');
+                    setBulkUploadVendor('');
+                    setIsBulkModalOpen(true);
+                  }}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
+                >
+                  <Upload className="w-4 h-4 md:w-5 md:h-5" />
+                  <span className="hidden sm:inline">Bulk Upload</span>
+                </button>
+                <button
+                  onClick={() => setIsModalOpen(true)}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-gray-900 text-white px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg hover:shadow-xl active:scale-95 text-sm md:text-base"
+                >
+                  <Plus className="w-4 h-4 md:w-5 md:h-5" />
+                  Drop Lead
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1121,10 +1517,21 @@ export default function LeadManagement() {
               </div>
             </div>
             
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Tags</label>
+              <input
+                type="text"
+                placeholder="Search tags..."
+                value={filters.tags}
+                onChange={(e) => setFilters({ ...filters, tags: e.target.value })}
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+              />
+            </div>
+
             <div className="flex items-end">
               <button
                 onClick={() => setFilters({
-                  search: '', projectId: '', vendorId: '', smId: '', dateFrom: '', dateTo: '', status: '', scoreMin: '', scoreMax: '', taskDateFrom: '', taskDateTo: ''
+                  search: '', projectId: '', vendorId: '', smId: '', dateFrom: '', dateTo: '', status: '', scoreMin: '', scoreMax: '', taskDateFrom: '', taskDateTo: '', tags: ''
                 })}
                 className="w-full px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-all"
               >
@@ -1135,6 +1542,76 @@ export default function LeadManagement() {
           </motion.div>
         )}
         </AnimatePresence>
+      </motion.div>
+
+      {/* AI Intelligence Summary Bar */}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ delay: 0.3 }}
+        className="mt-6 p-6 bg-gradient-to-r from-gray-900 via-indigo-950 to-indigo-900 rounded-3xl shadow-2xl relative overflow-hidden group"
+      >
+        <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2 blur-3xl group-hover:bg-white/10 transition-all duration-500"></div>
+        <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-500/5 rounded-full translate-y-1/2 -translate-x-1/2 blur-2xl group-hover:bg-indigo-500/10 transition-all duration-500"></div>
+
+        <div className="relative flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+          <div className="flex-1">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="p-2 bg-indigo-500/20 rounded-xl backdrop-blur-md border border-indigo-400/20">
+                <Sparkles className="w-5 h-5 text-indigo-300" />
+              </div>
+              <h3 className="text-lg font-black text-white tracking-tight">Lead Portfolio Summary</h3>
+            </div>
+            {!collectiveCallSummary && !isGeneratingCollectiveSummary ? (
+              <p className="text-indigo-200/60 text-sm max-w-xl">
+                Get a high-level intelligence summary of all {sortedLeads.length} leads in the current view. 
+                AI will analyze common themes, customer sentiment, and strategic blockers.
+              </p>
+            ) : isGeneratingCollectiveSummary ? (
+              <div className="flex items-center gap-4 py-2">
+                <div className="flex gap-1">
+                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"></div>
+                </div>
+                <p className="text-indigo-300 text-sm font-bold uppercase tracking-widest animate-pulse">Scanning voice intelligence & history...</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-indigo-50 text-sm leading-relaxed border-l-2 border-indigo-500/50 pl-4 py-1 italic">
+                  "{collectiveCallSummary.summary}"
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {collectiveCallSummary.topPainPoints?.map((pt: string, i: number) => (
+                    <span key={i} className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[10px] font-bold text-indigo-300 uppercase tracking-wider">
+                      {pt}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          
+          <div className="flex flex-col items-center md:items-end gap-3 min-w-[200px]">
+            <button
+              onClick={handleGenerateCollectiveSummary}
+              disabled={isGeneratingCollectiveSummary || sortedLeads.length === 0}
+              className="w-full md:w-auto px-6 py-3 bg-white text-indigo-900 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-indigo-50 transition-all shadow-xl shadow-indigo-500/20 disabled:opacity-50 flex items-center justify-center gap-2 group/btn"
+            >
+              <RefreshCw className={`w-4 h-4 ${isGeneratingCollectiveSummary ? 'animate-spin' : 'group-hover/btn:rotate-180 transition-transform duration-500'}`} />
+              {collectiveCallSummary ? 'Update Intelligence' : 'Generate Summary'}
+            </button>
+            {collectiveCallSummary?.strategicAdvice && (
+              <div className="bg-indigo-400/10 border border-indigo-400/20 rounded-xl p-3 max-w-[280px]">
+                <div className="flex items-center gap-2 mb-1 text-indigo-300">
+                  <Bot className="w-3 h-3" />
+                  <span className="text-[10px] font-black uppercase tracking-tighter">Strategic Advice</span>
+                </div>
+                <p className="text-[11px] text-indigo-100 font-medium leading-tight">{collectiveCallSummary.strategicAdvice}</p>
+              </div>
+            )}
+          </div>
+        </div>
       </motion.div>
 
       {/* Leads Table */}
@@ -1161,6 +1638,12 @@ export default function LeadManagement() {
                   <div className="flex items-center gap-1">
                     Customer
                     {sortConfig.key === 'customer' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
+                  </div>
+                </th>
+                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest cursor-pointer hover:bg-gray-100" onClick={() => handleSort('priority')}>
+                  <div className="flex items-center gap-1">
+                    Priority
+                    {sortConfig.key === 'priority' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
                   </div>
                 </th>
                 <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Project</th>
@@ -1197,6 +1680,15 @@ export default function LeadManagement() {
                   <td className="px-6 py-4">
                     <p className="font-bold text-gray-900">{lead.customerName}</p>
                     <p className="text-xs text-gray-500">{lead.customerPhone}</p>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
+                      lead.priority === 'High' ? 'bg-red-100 text-red-700' :
+                      lead.priority === 'Medium' ? 'bg-orange-100 text-orange-700' :
+                      'bg-blue-100 text-blue-700'
+                    }`}>
+                      {lead.priority || 'Medium'}
+                    </span>
                   </td>
                   <td className="px-6 py-4">
                     <span className="text-sm text-gray-700">
@@ -1295,6 +1787,38 @@ export default function LeadManagement() {
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-lg border border-gray-200">
+                        <a 
+                          href={`tel:${lead.customerPhone}`}
+                          className="p-1 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded transition-all"
+                          title="Call"
+                        >
+                          <Phone className="w-4 h-4" />
+                        </a>
+                        <a 
+                          href={`sms:${lead.customerPhone}`}
+                          className="p-1 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all"
+                          title="SMS"
+                        >
+                          <MessageSquare className="w-4 h-4" />
+                        </a>
+                        <a 
+                          href={`https://wa.me/${lead.customerPhone.replace(/\D/g, '')}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1 text-gray-400 hover:text-green-500 hover:bg-green-50 rounded transition-all"
+                          title="WhatsApp"
+                        >
+                          <Send className="w-4 h-4" />
+                        </a>
+                        <a 
+                          href={`mailto:${lead.customerEmail}`}
+                          className="p-1 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded transition-all"
+                          title="Email"
+                        >
+                          <Mail className="w-4 h-4" />
+                        </a>
+                      </div>
                       <button 
                         onClick={() => setSelectedLead(lead)}
                         className="p-2 bg-gray-50 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all"
@@ -1394,6 +1918,90 @@ export default function LeadManagement() {
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Email Address</label>
+                  <input
+                    type="email"
+                    value={editLeadData.customerEmail || ''}
+                    onChange={(e) => setEditLeadData({ ...editLeadData, customerEmail: e.target.value })}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Gender</label>
+                  <select
+                    value={editLeadData.gender || ''}
+                    onChange={(e) => setEditLeadData({ ...editLeadData, gender: e.target.value })}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                  >
+                    <option value="">Select Gender</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Living Location</label>
+                  <input
+                    type="text"
+                    value={editLeadData.livingLocation || ''}
+                    onChange={(e) => setEditLeadData({ ...editLeadData, livingLocation: e.target.value })}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Client Type</label>
+                  <select
+                    value={editLeadData.clientType || 'end_user'}
+                    onChange={(e) => setEditLeadData({ ...editLeadData, clientType: e.target.value })}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                  >
+                    <option value="end_user">End User</option>
+                    <option value="investor">Investor</option>
+                  </select>
+                </div>
+                <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-gray-50 rounded-2xl border border-gray-200">
+                  <div className="col-span-1 md:col-span-2">
+                    <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Professional Details</h3>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Company Name</label>
+                    <input
+                      type="text"
+                      value={editLeadData.companyName || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, companyName: e.target.value })}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Profession</label>
+                    <input
+                      type="text"
+                      value={editLeadData.profession || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, profession: e.target.value })}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Designation</label>
+                    <input
+                      type="text"
+                      value={editLeadData.designation || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, designation: e.target.value })}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">LinkedIn Profile</label>
+                    <input
+                      type="url"
+                      value={editLeadData.linkedinProfile || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, linkedinProfile: e.target.value })}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                      placeholder="https://linkedin.com/in/..."
+                    />
+                  </div>
+                </div>
+                <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">Budget (₹)</label>
                   <input
                     type="number"
@@ -1419,6 +2027,118 @@ export default function LeadManagement() {
                     <option value="1_year">Within 1 Year</option>
                     <option value="1_year_plus">More than 1 Year</option>
                   </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Priority</label>
+                  <select
+                    required
+                    value={editLeadData.priority || 'Medium'}
+                    onChange={(e) => setEditLeadData({ ...editLeadData, priority: e.target.value })}
+                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                  >
+                    <option value="High">High</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Low">Low</option>
+                  </select>
+                </div>
+                <div className="col-span-1 md:col-span-2">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">Tags</label>
+                  <TagInput 
+                    tags={editLeadData.tags || []} 
+                    onChange={(tags) => setEditLeadData({ ...editLeadData, tags })} 
+                    placeholder="Add tag and press Enter"
+                  />
+                </div>
+                <div className="col-span-1 md:col-span-2 bg-gray-50 p-6 rounded-2xl border border-gray-200">
+                  <label className="block text-sm font-bold text-gray-900 mb-4">Call Recording Analysis</label>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Upload New Recording</label>
+                        <input
+                          type="file"
+                          accept="audio/mp3,audio/wav"
+                          onChange={(e) => {
+                            if (e.target.files?.[0]) {
+                              setRecordingFile(e.target.files[0]);
+                              setEditLeadData({ ...editLeadData, callRecordingUrl: '' });
+                            }
+                          }}
+                          className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gray-900 file:text-white hover:file:bg-gray-800"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Recording URL</label>
+                        <input
+                          type="url"
+                          placeholder="https://..."
+                          value={editLeadData.callRecordingUrl || ''}
+                          onChange={(e) => {
+                            setEditLeadData({ ...editLeadData, callRecordingUrl: e.target.value });
+                            setRecordingFile(null);
+                          }}
+                          className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none text-sm"
+                        />
+                      </div>
+                    </div>
+                    
+                    <button
+                      type="button"
+                      onClick={() => handleAnalyzeRecording('edit')}
+                      disabled={isAnalyzing || (!editLeadData.callRecordingUrl && !recordingFile)}
+                      className="w-full py-2.5 bg-blue-50 text-blue-600 font-bold rounded-xl text-sm hover:bg-blue-100 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                          Analyzing with Gemini...
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="w-4 h-4" />
+                          Analyze Recording
+                        </>
+                      )}
+                    </button>
+
+                    {editLeadData.callAnalysis && (
+                      <div className="mt-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm space-y-3">
+                        <div className="flex justify-between items-start">
+                          <h4 className="text-xs font-black text-gray-400 uppercase tracking-widest">AI Analysis Result</h4>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            editLeadData.callAnalysis.priority === 'High' ? 'bg-red-100 text-red-600' : 
+                            editLeadData.callAnalysis.priority === 'Medium' ? 'bg-orange-100 text-orange-600' : 
+                            'bg-blue-100 text-blue-600'
+                          }`}>
+                            {editLeadData.callAnalysis.priority} Priority
+                          </span>
+                        </div>
+                        <div className="space-y-2 text-sm">
+                          <p><span className="font-bold text-gray-700">Summary:</span> {editLeadData.callAnalysis.summary}</p>
+                          <p><span className="font-bold text-gray-700">Suggested Score:</span> {editLeadData.callAnalysis.suggestedScore}/100</p>
+                          <div>
+                            <span className="font-bold text-gray-700">Pain Points:</span>
+                            <ul className="list-disc pl-5 mt-1 text-gray-600 text-xs space-y-1">
+                              {editLeadData.callAnalysis.painPoints?.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
+                            </ul>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const aiTags = editLeadData.callAnalysis.tags || [];
+                            const currentTags = editLeadData.tags || [];
+                            const mergedTags = [...new Set([...currentTags, ...aiTags])];
+                            setEditLeadData({ ...editLeadData, tags: mergedTags });
+                            showToast('AI tags applied to lead!', 'success');
+                          }}
+                          className="w-full py-1.5 bg-indigo-50 text-indigo-600 text-[10px] font-black uppercase tracking-widest rounded-lg hover:bg-indigo-100 transition-all"
+                        >
+                          Apply AI Tags
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1716,11 +2436,56 @@ export default function LeadManagement() {
               className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
             >
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Bulk Upload Leads</h2>
+            
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Select Project</label>
+                <select
+                  value={bulkUploadProject}
+                  onChange={(e) => setBulkUploadProject(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                >
+                  <option value="">Select a project...</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Select Vendor (Optional)</label>
+                <select
+                  value={bulkUploadVendor}
+                  onChange={(e) => setBulkUploadVendor(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                >
+                  <option value="">Default (Current User)</option>
+                  {partners.map(p => <option key={p.uid} value={p.uid}>{p.companyName || p.displayName}</option>)}
+                </select>
+              </div>
+            </div>
+
             <p className="text-sm text-gray-500 mb-6">
               Upload a CSV or Excel file with columns: <br/>
-              <code className="bg-gray-100 px-1 rounded">enquiryId, projectId, customerName, customerPhone, budget, possession, vendorNotes, callRecordingUrl</code>
+              <code className="bg-gray-100 px-1 rounded text-[10px]">enquiryId, customerName, customerPhone, budget, possession, vendorNotes, callRecordingUrl</code>
             </p>
             
+            <div className="mb-6 flex justify-end">
+              <button
+                onClick={() => {
+                  const csvContent = "data:text/csv;charset=utf-8,enquiryId,customerName,customerPhone,budget,possession,vendorNotes,callRecordingUrl\n123,John Doe,1234567890,1000000,immediate,Looking for 2BHK,https://example.com/recording.mp3";
+                  const encodedUri = encodeURI(csvContent);
+                  const link = document.createElement("a");
+                  link.setAttribute("href", encodedUri);
+                  link.setAttribute("download", "sample_leads.csv");
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                }}
+                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                Download Sample CSV
+              </button>
+            </div>
+
             <div 
               onClick={() => fileInputRef.current?.click()}
               className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-gray-900 transition-colors group"
@@ -1797,10 +2562,23 @@ export default function LeadManagement() {
                     className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
                   >
                     <option value="">Select Partner/Vendor</option>
-                    {partners.map(p => <option key={p.uid} value={p.uid}>{p.displayName} ({p.role})</option>)}
+                    {partners.map(p => <option key={p.uid} value={p.uid}>{p.companyName || p.displayName}</option>)}
                   </select>
                 </div>
               )}
+              <div className="col-span-2">
+                <label className="block text-sm font-bold text-gray-700 mb-1">Priority</label>
+                <select
+                  required
+                  value={newLead.priority}
+                  onChange={(e) => setNewLead({ ...newLead, priority: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                >
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+              </div>
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">Customer Name</label>
                 <input
@@ -1820,6 +2598,92 @@ export default function LeadManagement() {
                   onChange={(e) => setNewLead({ ...newLead, customerPhone: e.target.value })}
                   className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Email Address</label>
+                <input
+                  type="email"
+                  value={newLead.customerEmail}
+                  onChange={(e) => setNewLead({ ...newLead, customerEmail: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  placeholder="Optional"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Gender</label>
+                <select
+                  value={newLead.gender}
+                  onChange={(e) => setNewLead({ ...newLead, gender: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                >
+                  <option value="">Select Gender</option>
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Living Location</label>
+                <input
+                  type="text"
+                  value={newLead.livingLocation}
+                  onChange={(e) => setNewLead({ ...newLead, livingLocation: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  placeholder="City/Area"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1">Client Type</label>
+                <select
+                  value={newLead.clientType}
+                  onChange={(e) => setNewLead({ ...newLead, clientType: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                >
+                  <option value="end_user">End User</option>
+                  <option value="investor">Investor</option>
+                </select>
+              </div>
+              <div className="col-span-2 grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-xl border border-gray-200">
+                <div className="col-span-2">
+                  <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Professional Details</h3>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Company Name</label>
+                  <input
+                    type="text"
+                    value={newLead.companyName}
+                    onChange={(e) => setNewLead({ ...newLead, companyName: e.target.value })}
+                    className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Profession</label>
+                  <input
+                    type="text"
+                    value={newLead.profession}
+                    onChange={(e) => setNewLead({ ...newLead, profession: e.target.value })}
+                    className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">Designation</label>
+                  <input
+                    type="text"
+                    value={newLead.designation}
+                    onChange={(e) => setNewLead({ ...newLead, designation: e.target.value })}
+                    className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 mb-1">LinkedIn Profile</label>
+                  <input
+                    type="url"
+                    value={newLead.linkedinProfile}
+                    onChange={(e) => setNewLead({ ...newLead, linkedinProfile: e.target.value })}
+                    className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none"
+                    placeholder="https://linkedin.com/in/..."
+                  />
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1">Budget (₹)</label>
@@ -1849,6 +2713,14 @@ export default function LeadManagement() {
                   onChange={(e) => setNewLead({ ...newLead, vendorNotes: e.target.value })}
                   className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
                   placeholder="Any initial notes about this lead..."
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-bold text-gray-700 mb-1">Tags</label>
+                <TagInput 
+                  tags={newLead.tags} 
+                  onChange={(tags) => setNewLead({ ...newLead, tags })} 
+                  placeholder="Add tag (e.g. budget-conscious) and press Enter"
                 />
               </div>
               <div className="col-span-2 bg-gray-50 p-4 rounded-xl border border-gray-200">
@@ -1889,7 +2761,7 @@ export default function LeadManagement() {
                   <div className="pt-2">
                     <button
                       type="button"
-                      onClick={handleAnalyzeRecording}
+                      onClick={() => handleAnalyzeRecording('new')}
                       disabled={isAnalyzing || (!newLead.callRecordingUrl && !recordingFile)}
                       className="w-full py-2 bg-blue-50 text-blue-600 font-bold rounded-lg text-sm hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
@@ -1960,17 +2832,31 @@ export default function LeadManagement() {
               <p className="text-sm text-gray-500 mb-6">Updating status to: <span className="font-bold text-gray-900 uppercase">{statusUpdate.status.replace(/_/g, ' ')}</span></p>
               
               <form onSubmit={handleStatusSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-bold text-gray-700 mb-1">SM Notes / Comments</label>
-                  <textarea
-                    required
-                    rows={4}
-                    value={statusUpdate.notes}
-                    onChange={(e) => setStatusUpdate({ ...statusUpdate, notes: e.target.value })}
-                    className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
-                    placeholder="Provide details about this status change..."
-                  />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-bold text-gray-700">SM Notes / Comments</label>
+                  <button
+                    type="button"
+                    onMouseDown={startRecording}
+                    onMouseUp={stopRecording}
+                    onMouseLeave={stopRecording}
+                    onTouchStart={startRecording}
+                    onTouchEnd={stopRecording}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all ${
+                      isRecording ? 'bg-red-100 text-red-600 animate-pulse border-red-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border-gray-200'
+                    } border`}
+                  >
+                    {isRecording ? <Square className="w-3 h-3 fill-current" /> : <Mic className="w-3 h-3" />}
+                    {isRecording ? 'Recording...' : isTranscribing ? 'Transcribing...' : 'Hold to Record Voice Note'}
+                  </button>
                 </div>
+                <textarea
+                  required
+                  rows={4}
+                  value={statusUpdate.notes}
+                  onChange={(e) => setStatusUpdate({ ...statusUpdate, notes: e.target.value })}
+                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
+                  placeholder={isTranscribing ? 'Transcribing your voice...' : 'Provide details about this status change...'}
+                />
                 <div className="flex gap-4 mt-8">
                   <button
                     type="button"
@@ -1992,298 +2878,851 @@ export default function LeadManagement() {
         )}
       </AnimatePresence>
 
-      {/* Feedback Modal */}
+      {/* Lead Details Slide-over Panel */}
       <AnimatePresence>
         {selectedLead && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex justify-end z-[60]">
             <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl max-w-2xl w-full p-6 md:p-8 shadow-2xl max-h-[90vh] overflow-y-auto"
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="bg-white w-full max-w-2xl h-full shadow-2xl flex flex-col"
             >
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Lead Feedback</h2>
-              <div className="flex justify-between items-center mb-6">
-                <p className="text-sm text-gray-500">For: {selectedLead.customerName} ({selectedLead.enquiryId})</p>
-              {(() => {
-                const { total, breakdown } = calculateLeadScore(selectedLead);
-                return (
-                  <div className="flex items-center gap-3 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-100">
-                    <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Lead Score</span>
-                    <span className={`text-sm font-black ${
-                      total > 70 ? 'text-green-600' : total > 40 ? 'text-blue-600' : 'text-orange-600'
-                    }`}>{total}/100</span>
+              {/* Header */}
+              <div className="p-6 border-b border-gray-100 flex justify-between items-start bg-gray-50/50 shrink-0">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900 mb-1">Lead Details</h2>
+                  <p className="text-sm text-gray-500">For: {selectedLead.customerName} ({selectedLead.enquiryId})</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-1 bg-white p-1.5 rounded-xl border border-gray-200 shadow-sm mr-2">
+                    <a href={`tel:${selectedLead.customerPhone}`} className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Call">
+                      <Phone className="w-5 h-5" />
+                    </a>
+                    <a href={`sms:${selectedLead.customerPhone}`} className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="SMS">
+                      <MessageSquare className="w-5 h-5" />
+                    </a>
+                    <a href={`https://wa.me/${selectedLead.customerPhone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="p-2 text-gray-500 hover:text-green-500 hover:bg-green-50 rounded-lg transition-all" title="WhatsApp">
+                      <Send className="w-5 h-5" />
+                    </a>
+                    <a href={`mailto:${selectedLead.customerEmail}`} className="p-2 text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all" title="Email">
+                      <Mail className="w-5 h-5" />
+                    </a>
                   </div>
-                );
-              })()}
-            </div>
-            
-            {/* View Toggle Tabs */}
-            <div className="flex bg-gray-100 p-1 rounded-xl mb-6">
-              <button
-                onClick={() => setFeedbackView('vendor')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                  feedbackView === 'vendor' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Vendor View
-              </button>
-              <button
-                onClick={() => setFeedbackView('sm')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                  feedbackView === 'sm' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                SM View
-              </button>
-              <button
-                onClick={() => setFeedbackView('tasks')}
-                className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                  feedbackView === 'tasks' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
-              >
-                Tasks ({tasks.length})
-              </button>
-            </div>
-
-            <div className="max-h-80 overflow-y-auto mb-6 space-y-4">
-              {selectedLead.callRecordingUrl && (
-                <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-4">
-                  <h4 className="text-sm font-bold text-gray-900 mb-2">Initial Call Recording</h4>
-                  <audio controls src={selectedLead.callRecordingUrl} className="w-full h-8 mb-3" />
-                  {selectedLead.callAnalysis && (
-                    <div className="text-sm space-y-2 mt-3 pt-3 border-t border-blue-200">
-                      <p><span className="font-bold text-gray-700">Priority:</span> <span className={`font-bold ${selectedLead.callAnalysis.priority === 'High' ? 'text-red-600' : selectedLead.callAnalysis.priority === 'Medium' ? 'text-orange-500' : 'text-blue-500'}`}>{selectedLead.callAnalysis.priority}</span></p>
-                      <p><span className="font-bold text-gray-700">Suggested Score:</span> {selectedLead.callAnalysis.suggestedScore}</p>
-                      <p><span className="font-bold text-gray-700">Summary:</span> {selectedLead.callAnalysis.summary}</p>
-                      {selectedLead.callAnalysis.keyTakeaways && (
-                        <p><span className="font-bold text-gray-700">Takeaways:</span> {selectedLead.callAnalysis.keyTakeaways}</p>
-                      )}
-                      <div>
-                        <span className="font-bold text-gray-700">Pain Points:</span>
-                        <ul className="list-disc pl-5 mt-1 text-gray-600">
-                          {selectedLead.callAnalysis.painPoints?.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
-                        </ul>
+                  <button
+                    onClick={() => {
+                      setEditLeadData(selectedLead);
+                      setIsEditModalOpen(true);
+                    }}
+                    className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all bg-white border border-gray-200 shadow-sm"
+                    title="Edit Lead"
+                  >
+                    <Edit2 className="w-5 h-5" />
+                  </button>
+                  {(() => {
+                    const { total } = calculateLeadScore(selectedLead);
+                    return (
+                      <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-gray-200 shadow-sm">
+                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Score</span>
+                        <span className={`text-sm font-black ${
+                          total > 70 ? 'text-green-600' : total > 40 ? 'text-blue-600' : 'text-orange-600'
+                        }`}>{total}/100</span>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
+                  <button 
+                    onClick={() => {
+                      setSelectedLead(null);
+                      setFeedbackRecordingFile(null);
+                    }}
+                    className="p-2 hover:bg-gray-200 rounded-full transition-colors bg-white border border-gray-200 shadow-sm"
+                  >
+                    <X className="w-5 h-5 text-gray-500" />
+                  </button>
                 </div>
-              )}
+              </div>
 
-              {selectedLead.additionalRecordings?.length > 0 && (
-                <div className="space-y-3 mb-4">
-                  <h4 className="text-sm font-bold text-gray-900">Additional Call Recordings</h4>
-                  {selectedLead.additionalRecordings.map((rec: any, i: number) => (
-                    <div key={i} className="bg-gray-50 p-3 rounded-xl border border-gray-200">
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-xs font-bold text-gray-500">Attempt {i + 2}</span>
-                        <span className="text-[10px] text-gray-400">{new Date(rec.addedAt).toLocaleString()}</span>
-                      </div>
-                      <audio controls src={rec.url} className="w-full h-8" />
-                      <p className="text-[10px] text-gray-400 mt-2 text-right">Added by: {rec.addedBy}</p>
-                    </div>
-                  ))}
+              {/* Content */}
+              <div className="flex-1 overflow-y-auto p-6">
+                {/* View Toggle Tabs */}
+                <div className="flex bg-gray-100 p-1 rounded-xl mb-8 overflow-x-auto whitespace-nowrap scrollbar-hide">
+                  <button
+                    onClick={() => setFeedbackView('vendor')}
+                    className={`flex-1 py-2.5 px-4 text-[10px] md:text-xs font-bold rounded-lg transition-all ${
+                      feedbackView === 'vendor' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Vendor View
+                  </button>
+                  <button
+                    onClick={() => setFeedbackView('sm')}
+                    className={`flex-1 py-2.5 px-4 text-[10px] md:text-xs font-bold rounded-lg transition-all ${
+                      feedbackView === 'sm' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    SM View
+                  </button>
+                  <button
+                    onClick={() => setFeedbackView('call_analysis')}
+                    className={`flex-1 py-2.5 px-4 text-[10px] md:text-xs font-bold rounded-lg transition-all ${
+                      feedbackView === 'call_analysis' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Call Analysis
+                  </button>
+                  <button
+                    onClick={() => setFeedbackView('tasks')}
+                    className={`flex-1 py-2.5 px-4 text-[10px] md:text-xs font-bold rounded-lg transition-all ${
+                      feedbackView === 'tasks' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Tasks ({tasks.length})
+                  </button>
                 </div>
-              )}
 
-              {feedbackView === 'tasks' ? (
-                <div className="space-y-6">
-                  <form onSubmit={handleAddTask} className="bg-gray-50 p-4 rounded-xl border border-gray-100 space-y-3">
-                    <p className="text-xs font-bold text-gray-500 uppercase">Create New Task</p>
-                    <input
-                      required
-                      type="text"
-                      placeholder="Task title (e.g. Call back)"
-                      value={newTask.title}
-                      onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
-                      className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="date"
-                        required
-                        min={new Date().toISOString().split('T')[0]}
-                        value={newTask.dueDate}
-                        onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })}
-                        className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
-                      />
-                      <select
-                        required
-                        value={newTask.assignedTo}
-                        onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value })}
-                        className="px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                <div className="space-y-8">
+                  {/* AI Follow-up Suggestions Section */}
+                  <div className="bg-gradient-to-br from-indigo-50 to-blue-50 p-6 rounded-2xl border border-indigo-100 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest flex items-center gap-2">
+                        <Bot className="w-3 h-3" />
+                        AI Follow-up Intelligence
+                      </h4>
+                      <button
+                        onClick={() => handleGetFollowUpSuggestions(selectedLead)}
+                        disabled={isSuggestingFollowUps}
+                        className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1 bg-white px-2 py-1 rounded-md border border-indigo-100 shadow-sm transition-all disabled:opacity-50"
                       >
-                        <option value="">Assign to...</option>
-                        <optgroup label="Sales Managers">
-                          {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
-                        </optgroup>
-                        <optgroup label="Admins">
-                          {admins.map(admin => <option key={admin.uid} value={admin.uid}>{admin.displayName} (Admin)</option>)}
-                        </optgroup>
-                      </select>
+                        <RefreshCw className={`w-3 h-3 ${isSuggestingFollowUps ? 'animate-spin' : ''}`} />
+                        {followUpSuggestions.length > 0 ? 'Refresh' : 'Get Suggestions'}
+                      </button>
                     </div>
-                    <button
-                      type="submit"
-                      className="w-full py-2 bg-gray-900 text-white rounded-lg text-xs font-bold hover:bg-gray-800 transition-all"
-                    >
-                      Add Task
-                    </button>
-                  </form>
 
-                  <div className="space-y-3">
-                    <p className="text-xs font-bold text-gray-500 uppercase px-1">Active Tasks</p>
-                    {tasks.length > 0 ? (
-                      tasks.sort((a, b) => (a.completed === b.completed ? 0 : a.completed ? 1 : -1)).map((task) => (
-                        <div key={task.id} className={`p-3 rounded-xl border transition-all flex items-center gap-3 ${
-                          task.completed ? 'bg-gray-50 border-gray-100 opacity-60' : 'bg-white border-gray-200 shadow-sm'
-                        }`}>
-                          <button
-                            onClick={() => toggleTaskCompletion(task.id, task.completed)}
-                            className={`w-5 h-5 rounded flex items-center justify-center transition-all ${
-                              task.completed ? 'bg-green-500 text-white' : 'border-2 border-gray-300 hover:border-gray-900'
-                            }`}
-                          >
-                            {task.completed && <Check className="w-3 h-3" />}
-                          </button>
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-sm font-bold truncate ${task.completed ? 'line-through text-gray-400' : 'text-gray-900'}`}>
-                              {task.title}
-                            </p>
-                            <div className="flex items-center gap-3 mt-1">
-                              <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                                <User className="w-3 h-3" />
-                                {sms.find(s => s.uid === task.assignedTo)?.displayName || 'Assigned'}
-                              </span>
-                              {task.dueDate && (
-                                <span className={`text-[10px] flex items-center gap-1 ${
-                                  !task.completed && new Date(task.dueDate) < new Date() ? 'text-red-500 font-bold' : 'text-gray-400'
-                                }`}>
-                                  <Calendar className="w-3 h-3" />
-                                  {new Date(task.dueDate).toLocaleDateString()}
-                                </span>
-                              )}
+                    {isSuggestingFollowUps ? (
+                      <div className="flex flex-col items-center justify-center py-8 space-y-3">
+                        <div className="flex gap-1">
+                          <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                          <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                          <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce"></div>
+                        </div>
+                        <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Analyzing lead context...</p>
+                      </div>
+                    ) : followUpSuggestions.length > 0 ? (
+                      <div className="space-y-3">
+                        {followUpSuggestions.map((suggestion, idx) => (
+                          <div key={idx} className="bg-white p-4 rounded-xl border border-indigo-100 shadow-sm hover:shadow-md transition-all group">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className={`p-1 rounded ${
+                                    suggestion.type === 'call' ? 'bg-blue-50 text-blue-600' :
+                                    suggestion.type === 'email' ? 'bg-purple-50 text-purple-600' :
+                                    suggestion.type === 'whatsapp' ? 'bg-green-50 text-green-600' :
+                                    'bg-orange-50 text-orange-600'
+                                  }`}>
+                                    {suggestion.type === 'call' && <Clock className="w-3 h-3" />}
+                                    {suggestion.type === 'email' && <Send className="w-3 h-3" />}
+                                    {suggestion.type === 'whatsapp' && <MessageSquare className="w-3 h-3" />}
+                                    {suggestion.type === 'meeting' && <Calendar className="w-3 h-3" />}
+                                  </span>
+                                  <h5 className="text-sm font-bold text-gray-900">{suggestion.title}</h5>
+                                </div>
+                                <p className="text-xs text-gray-600 leading-relaxed mb-3">{suggestion.description}</p>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-bold text-gray-400 bg-gray-50 px-2 py-0.5 rounded border border-gray-100">
+                                    In {suggestion.suggestedDaysFromNow} days
+                                  </span>
+                                  <button
+                                    onClick={() => handleScheduleSuggestion(suggestion, selectedLead)}
+                                    className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all"
+                                  >
+                                    <Plus className="w-3 h-3" />
+                                    Schedule
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))
+                        ))}
+                      </div>
                     ) : (
-                      <div className="text-center py-8 bg-gray-50 rounded-xl border border-dashed border-gray-200">
-                        <CheckSquare className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-                        <p className="text-xs text-gray-400 font-medium">No tasks found for this lead.</p>
+                      <div className="text-center py-6">
+                        <Sparkles className="w-8 h-8 text-indigo-200 mx-auto mb-2" />
+                        <p className="text-xs text-indigo-300 font-medium">Click "Get Suggestions" for AI-powered follow-up strategy.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Lead Tags Section */}
+                  {selectedLead.tags && selectedLead.tags.length > 0 && (
+                    <div className="bg-indigo-50/30 p-4 rounded-2xl border border-indigo-100/50">
+                      <h4 className="text-[10px] font-black text-indigo-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+                        <Sparkles className="w-3 h-3" />
+                        Lead Tags
+                      </h4>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedLead.tags.map((tag: string, i: number) => (
+                          <span key={i} className="px-3 py-1 bg-white text-indigo-700 text-xs font-bold rounded-lg border border-indigo-100 shadow-sm">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Client Profile Section */}
+                  <div className="bg-gray-50 p-6 rounded-2xl border border-gray-200">
+                    <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                      <User className="w-3 h-3" />
+                      Client Profile
+                    </h4>
+                    <div className="grid grid-cols-2 gap-y-4 gap-x-6">
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">Email</span>
+                        <p className="text-sm font-bold text-gray-900 break-all">{selectedLead.customerEmail || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">Location</span>
+                        <p className="text-sm font-bold text-gray-900">{selectedLead.livingLocation || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">Gender</span>
+                        <p className="text-sm font-bold text-gray-900 capitalize">{selectedLead.gender || 'N/A'}</p>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">Client Type</span>
+                        <p className="text-sm font-bold text-gray-900 capitalize">{(selectedLead.clientType || 'end_user').replace('_', ' ')}</p>
+                      </div>
+                      <div className="col-span-2 pt-2 border-t border-gray-100">
+                        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-tight">Professional Info</span>
+                        <div className="mt-2 space-y-2">
+                          <p className="text-sm text-gray-900">
+                            <span className="font-bold">{selectedLead.designation || 'N/A'}</span> at <span className="font-bold">{selectedLead.companyName || 'N/A'}</span>
+                          </p>
+                          <p className="text-sm text-gray-600">
+                            Profession: <span className="font-bold text-gray-900">{selectedLead.profession || 'N/A'}</span>
+                          </p>
+                          {selectedLead.linkedinProfile && (
+                            <a 
+                              href={selectedLead.linkedinProfile} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-700 mt-1"
+                            >
+                              <Link className="w-3 h-3" />
+                              LinkedIn Profile
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Recordings Section (Always visible) */}
+                  {(selectedLead.callRecordingUrl || selectedLead.additionalRecordings?.length > 0) && (
+                    <div className="space-y-4">
+                      {selectedLead.callRecordingUrl && (
+                        <div className="bg-blue-50/50 p-5 rounded-2xl border border-blue-100">
+                          <h4 className="text-sm font-bold text-gray-900 mb-3 flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                            Initial Call Recording
+                          </h4>
+                          <audio controls src={selectedLead.callRecordingUrl} className="w-full h-10 mb-4 focus:outline-none" />
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => setFeedbackView('call_analysis')}
+                              className="text-xs font-bold text-blue-600 bg-white px-3 py-1.5 rounded-lg border border-blue-100 hover:bg-blue-50 transition-all flex items-center gap-2 shadow-sm"
+                            >
+                              <Bot className="w-4 h-4" />
+                              {selectedLead.callAnalysis ? 'View AI Intelligence Summary' : 'Analyze Recording'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedLead.additionalRecordings?.length > 0 && (
+                        <div className="space-y-3">
+                          <h4 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-gray-300"></div>
+                            Additional Call Recordings
+                          </h4>
+                          <div className="grid gap-3">
+                            {selectedLead.additionalRecordings.map((rec: any, i: number) => (
+                              <div key={i} className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                <div className="flex justify-between items-center mb-3">
+                                  <span className="text-xs font-bold text-gray-700 bg-white px-2 py-1 rounded shadow-sm border border-gray-100">Attempt {i + 2}</span>
+                                  <span className="text-[10px] font-medium text-gray-400 bg-gray-100 px-2 py-1 rounded-full">{new Date(rec.addedAt).toLocaleString()}</span>
+                                </div>
+                                <audio controls src={rec.url} className="w-full h-10 mb-2" />
+                                {rec.analysis && (
+                                  <div className="mt-3 pt-3 border-t border-gray-200 text-xs space-y-2">
+                                    <p><span className="font-bold text-gray-500 uppercase text-[9px] tracking-wider block mb-0.5">Summary</span> <span className="text-gray-700">{rec.analysis.summary}</span></p>
+                                    {rec.analysis.tags && (
+                                      <div className="flex flex-wrap gap-1">
+                                        {rec.analysis.tags.map((tag: string, j: number) => (
+                                          <span key={j} className="px-1.5 py-0.5 bg-gray-200 text-gray-600 text-[9px] font-bold rounded uppercase">{tag}</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                <p className="text-[10px] text-gray-500 font-medium flex items-center gap-1 justify-end mt-2">
+                                  <User className="w-3 h-3" />
+                                  Added by: {rec.addedBy}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Tab Content */}
+                  <div className="flex-1 overflow-y-auto">
+                    {feedbackView === 'call_analysis' ? (
+                      <div className="space-y-6">
+                        {selectedLead.callAnalysis ? (
+                          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-6">
+                            {/* Audit Header */}
+                            <div className="flex items-center justify-between border-b border-gray-50 pb-5">
+                              <div className="flex items-center gap-4">
+                                <div className={`p-3 rounded-2xl ${
+                                  selectedLead.callAnalysis.auditOutcome === 'QUALIFIED' ? 'bg-green-50' : 
+                                  selectedLead.callAnalysis.auditOutcome === 'UNQUALIFIED' ? 'bg-red-50' : 'bg-orange-50'
+                                }`}>
+                                  <CheckCircle className={`w-8 h-8 ${
+                                    selectedLead.callAnalysis.auditOutcome === 'QUALIFIED' ? 'text-green-500' : 
+                                    selectedLead.callAnalysis.auditOutcome === 'UNQUALIFIED' ? 'text-red-500' : 'text-orange-500'
+                                  }`} />
+                                </div>
+                                <div>
+                                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em] mb-1">Audit Outcome</p>
+                                  <h4 className={`text-2xl font-black tracking-tight ${
+                                    selectedLead.callAnalysis.auditOutcome === 'QUALIFIED' ? 'text-green-600' : 
+                                    selectedLead.callAnalysis.auditOutcome === 'UNQUALIFIED' ? 'text-red-600' : 'text-orange-600'
+                                  }`}>
+                                    {selectedLead.callAnalysis.auditOutcome || 'QUALIFIED'}
+                                  </h4>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Auditor Confidence</p>
+                                <div className="flex items-center gap-3">
+                                  <span className="text-2xl font-black text-gray-900">{selectedLead.callAnalysis.confidenceScore || Math.round((selectedLead.callAnalysis.confidence || 0) * 100)}%</span>
+                                  <div className="w-20 h-2 bg-gray-100 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-indigo-600 rounded-full" 
+                                      style={{ width: `${selectedLead.callAnalysis.confidenceScore || (selectedLead.callAnalysis.confidence ? selectedLead.callAnalysis.confidence * 100 : 0)}%` }}
+                                    ></div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Qualification Matrix */}
+                            <div>
+                               <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">Qualification Matrix</label>
+                               <div className="grid grid-cols-2 gap-3">
+                                 {selectedLead.callAnalysis.qualificationMatrix ? Object.entries(selectedLead.callAnalysis.qualificationMatrix).map(([key, data]: [string, any]) => (
+                                   <div key={key} className="bg-gray-50/50 p-4 rounded-xl border border-gray-100 flex items-center justify-between">
+                                     <div>
+                                       <p className="text-[9px] font-bold text-gray-400 uppercase mb-0.5">{key}</p>
+                                       <p className="text-xs font-black text-gray-900">{data.value}</p>
+                                     </div>
+                                     <div className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter flex items-center gap-1 ${
+                                       data.isMatched ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                                     }`}>
+                                       {data.isMatched ? <Check className="w-2.5 h-2.5" /> : <X className="w-2.5 h-2.5" />}
+                                       {data.isMatched ? 'Matched' : 'Mismatch'}
+                                     </div>
+                                   </div>
+                                 )) : (
+                                   <div className="col-span-2 text-center py-4 bg-gray-50 rounded-xl border border-dashed border-gray-200 text-[9px] text-gray-400 font-bold uppercase">
+                                     Standard Matrix Data Not Available
+                                   </div>
+                                 )}
+                               </div>
+                             </div>
+
+                             {/* Sentiment & Summary */}
+                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                               <div className="md:col-span-2">
+                                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                   <MessageSquare className="w-3 h-3 text-indigo-400" />
+                                   Conversation Summary
+                                 </label>
+                                 <div className="bg-indigo-50/20 p-5 rounded-2xl border border-indigo-100/50 relative">
+                                   <CornerUpLeft className="w-8 h-8 text-indigo-100 absolute -top-4 -left-4 -scale-100 opacity-50" />
+                                   <p className="text-sm text-gray-700 leading-relaxed font-medium">
+                                     {selectedLead.callAnalysis.summary}
+                                   </p>
+                                 </div>
+                               </div>
+                               <div>
+                                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4">Sentiment Analysis</label>
+                                 <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm text-center">
+                                   <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full mb-3 ${
+                                     (selectedLead.callAnalysis.sentiment?.label === 'POSITIVE' || selectedLead.callAnalysis.sentiment === 'Positive') ? 'bg-green-50 text-green-600' : 
+                                     (selectedLead.callAnalysis.sentiment?.label === 'NEGATIVE' || selectedLead.callAnalysis.sentiment === 'Negative') ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-600'
+                                   }`}>
+                                     {(selectedLead.callAnalysis.sentiment?.label === 'POSITIVE' || selectedLead.callAnalysis.sentiment === 'Positive') ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
+                                     <span className="text-xs font-black uppercase tracking-wider">{selectedLead.callAnalysis.sentiment?.label || selectedLead.callAnalysis.sentiment || 'NEUTRAL'}</span>
+                                   </div>
+                                   <p className="text-4xl font-black text-gray-900">{selectedLead.callAnalysis.sentiment?.score || 0}%</p>
+                                 </div>
+                               </div>
+                             </div>
+
+                             {/* Blockers & Advice */}
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                               <div className="space-y-4">
+                                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                   <XCircle className="w-3 h-3 text-red-400" />
+                                   Conversion Blockers
+                                 </label>
+                                 {(selectedLead.callAnalysis.conversionBlockers || selectedLead.callAnalysis.painPoints || []).map((blocker: string, i: number) => (
+                                   <div key={i} className="flex items-start gap-4 p-4 bg-red-50/50 rounded-xl border border-red-100 group">
+                                     <X className="w-4 h-4 text-red-400 mt-0.5 shrink-0 group-hover:rotate-90 transition-transform" />
+                                     <p className="text-xs text-red-800 font-bold leading-relaxed">{blocker}</p>
+                                   </div>
+                                 ))}
+                                 {(selectedLead.callAnalysis.conversionBlockers || selectedLead.callAnalysis.painPoints || []).length === 0 && (
+                                   <div className="text-center py-4 text-[9px] text-gray-400 font-bold uppercase italic tracking-widest bg-gray-50 rounded-xl border border-dashed">No Blockers Identified</div>
+                                 )}
+                               </div>
+                               <div className="space-y-4">
+                                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                   <Sparkles className="w-3 h-3 text-green-400" />
+                                   AI Strategic Advice
+                                 </label>
+                                 {(selectedLead.callAnalysis.strategicAdvice || selectedLead.callAnalysis.objections || []).map((advice: string, i: number) => (
+                                   <div key={i} className="flex items-start gap-4 p-4 bg-green-50/50 rounded-xl border border-green-100 group">
+                                     <Check className="w-4 h-4 text-green-400 mt-0.5 shrink-0 group-hover:scale-110 transition-transform" />
+                                     <p className="text-xs text-green-800 font-bold leading-relaxed">{advice}</p>
+                                   </div>
+                                 ))}
+                                 {(selectedLead.callAnalysis.strategicAdvice || selectedLead.callAnalysis.objections || []).length === 0 && (
+                                   <div className="text-center py-4 text-[9px] text-gray-400 font-bold uppercase italic tracking-widest bg-gray-50 rounded-xl border border-dashed">No Specific Advice Provided</div>
+                                 )}
+                               </div>
+                             </div>
+
+                             {/* Transcript */}
+                             {selectedLead.callAnalysis.transcription && (
+                               <div>
+                                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                   <FileText className="w-3 h-3 text-indigo-400" />
+                                   Call Transcription (Verbatim)
+                                 </label>
+                                 <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800 h-64 overflow-y-auto font-mono text-[11px] text-indigo-100/70 leading-relaxed scrollbar-hide select-all">
+                                   {selectedLead.callAnalysis.transcription.split('\n').map((line: string, j: number) => (
+                                     <div key={j} className={`mb-3 flex gap-4 ${line.startsWith('Sales') ? 'text-blue-300' : line.startsWith('Customer') ? 'text-indigo-100 font-medium' : 'text-gray-500 italic'}`}>
+                                       <span className="opacity-30 shrink-0">{(j + 1).toString().padStart(2, '0')}</span>
+                                       <p>{line}</p>
+                                     </div>
+                                   ))}
+                                 </div>
+                               </div>
+                             )}
+
+                             {/* Additional Info Tags */}
+                             {selectedLead.callAnalysis.tags && (
+                               <div className="pt-4 border-t border-gray-50">
+                                 <div className="flex flex-wrap gap-2">
+                                   {selectedLead.callAnalysis.tags.map((tag: string, i: number) => (
+                                     <span key={i} className="px-3 py-1 bg-gray-50 text-gray-600 text-[10px] font-bold rounded-lg border border-gray-100 uppercase tracking-wider">
+                                       {tag}
+                                     </span>
+                                   ))}
+                                 </div>
+                               </div>
+                             )}
+                          </div>
+                        ) : (
+                          <div className="text-center py-20 bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200">
+                            <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-100">
+                              <Bot className="w-10 h-10 text-gray-300" />
+                            </div>
+                            <h5 className="text-lg font-black text-gray-900 mb-2">Generate Intelligence</h5>
+                            <p className="text-sm text-gray-500 mb-8 max-w-sm mx-auto">
+                              {selectedLead.callRecordingUrl 
+                                ? 'This lead has a recording available but it hasn\'t been strategically analyzed yet.' 
+                                : 'Upload a call recording or provide a URL to unlock deep conversion insights.'}
+                            </p>
+                            {selectedLead.callRecordingUrl && (
+                              <button
+                                onClick={handleAnalyzeSelectedLeadRecording}
+                                disabled={isAnalyzing}
+                                className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center gap-3 mx-auto disabled:opacity-50"
+                              >
+                                {isAnalyzing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
+                                {isAnalyzing ? 'Analyzing Strategy...' : 'Analyze Strategic Intelligence'}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Additional Recordings Analysis History */}
+                        {selectedLead.additionalRecordings?.some((r: any) => r.analysis) && (
+                          <div className="space-y-4 pt-6 mt-6 border-t border-gray-100">
+                            <h5 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">History of Feedback Analysis</h5>
+                            {selectedLead.additionalRecordings.map((rec: any, i: number) => rec.analysis && (
+                              <div key={i} className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm opacity-80 hover:opacity-100 transition-opacity">
+                                <div className="flex justify-between items-center mb-3">
+                                  <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded uppercase tracking-wider">Attempt {i + 2}</span>
+                                  <span className="text-[10px] font-medium text-gray-400 bg-gray-50 px-2 py-0.5 rounded-full">{new Date(rec.addedAt).toLocaleDateString()}</span>
+                                </div>
+                                <p className="text-xs text-gray-700 leading-relaxed font-medium italic mb-2">"{rec.analysis.summary}"</p>
+                                {rec.analysis.tags && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {rec.analysis.tags.map((tag: string, j: number) => (
+                                      <span key={j} className="px-1.5 py-0.5 bg-gray-100 text-gray-500 text-[9px] font-bold rounded uppercase">{tag}</span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : feedbackView === 'tasks' ? (
+                      <div className="space-y-6">
+                        <form onSubmit={handleAddTask} className="bg-gray-50 p-5 rounded-2xl border border-gray-200 space-y-4">
+                          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Create New Task</p>
+                          <input
+                            required
+                            type="text"
+                            placeholder="Task title (e.g. Call back)"
+                            value={newTask.title}
+                            onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+                            className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                          />
+                          <div className="grid grid-cols-2 gap-3">
+                            <input
+                              type="date"
+                              required
+                              min={new Date().toISOString().split('T')[0]}
+                              value={newTask.dueDate}
+                              onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })}
+                              className="px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                            />
+                            <select
+                              required
+                              value={newTask.assignedTo}
+                              onChange={(e) => setNewTask({ ...newTask, assignedTo: e.target.value })}
+                              className="px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                            >
+                              <option value="">Assign to...</option>
+                              <optgroup label="Sales Managers">
+                                {sms.map(sm => <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>)}
+                              </optgroup>
+                              <optgroup label="Admins">
+                                {admins.map(admin => <option key={admin.uid} value={admin.uid}>{admin.displayName} (Admin)</option>)}
+                              </optgroup>
+                            </select>
+                          </div>
+                          <button
+                            type="submit"
+                            className="w-full py-3 bg-gray-900 text-white rounded-xl text-sm font-bold hover:bg-gray-800 transition-all shadow-lg shadow-gray-900/20"
+                          >
+                            Add Task
+                          </button>
+                        </form>
+
+                        <div className="space-y-3">
+                          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider px-1">Active Tasks</p>
+                          {tasks.length > 0 ? (
+                            tasks.sort((a, b) => (a.completed === b.completed ? 0 : a.completed ? 1 : -1)).map((task) => (
+                              <div key={task.id} className={`p-4 rounded-2xl border transition-all flex items-center gap-4 ${
+                                task.completed ? 'bg-gray-50 border-gray-100 opacity-60' : 'bg-white border-gray-200 shadow-sm hover:shadow-md'
+                              }`}>
+                                <button
+                                  onClick={() => toggleTaskCompletion(task.id, task.completed)}
+                                  className={`w-6 h-6 rounded-md flex items-center justify-center transition-all shrink-0 ${
+                                    task.completed ? 'bg-green-500 text-white' : 'border-2 border-gray-300 hover:border-gray-900'
+                                  }`}
+                                >
+                                  {task.completed && <Check className="w-4 h-4" />}
+                                </button>
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-sm font-bold truncate ${task.completed ? 'line-through text-gray-400' : 'text-gray-900'}`}>
+                                    {task.title}
+                                  </p>
+                                  <div className="flex items-center gap-4 mt-1.5">
+                                    <span className="text-[11px] text-gray-500 flex items-center gap-1.5 bg-gray-100 px-2 py-0.5 rounded-md">
+                                      <User className="w-3 h-3" />
+                                      {sms.find(s => s.uid === task.assignedTo)?.displayName || 'Assigned'}
+                                    </span>
+                                    {task.dueDate && (
+                                      <span className={`text-[11px] flex items-center gap-1.5 px-2 py-0.5 rounded-md ${
+                                        !task.completed && new Date(task.dueDate) < new Date() ? 'bg-red-50 text-red-600 font-bold' : 'bg-gray-100 text-gray-500'
+                                      }`}>
+                                        <Calendar className="w-3 h-3" />
+                                        {new Date(task.dueDate).toLocaleDateString()}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-center py-10 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                              <CheckSquare className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                              <p className="text-sm text-gray-400 font-medium">No tasks found for this lead.</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : feedbackView === 'vendor' ? (
+                      <div className="space-y-6">
+                        <div className="p-5 bg-blue-50/50 rounded-2xl border border-blue-100">
+                          <p className="text-xs font-bold text-blue-700 uppercase tracking-wider mb-2">Initial Vendor Notes</p>
+                          <p className="text-sm text-gray-700 leading-relaxed">{selectedLead.vendorNotes || 'No initial notes.'}</p>
+                        </div>
+
+                        <div className="space-y-3">
+                          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider px-1">Partner/Vendor History</p>
+                          {selectedLead.partnerFeedback?.length > 0 ? (
+                            <div className="space-y-2">
+                              {selectedLead.partnerFeedback.map((f: string, i: number) => (
+                                <div key={i} className="p-4 bg-gray-50 rounded-xl text-sm text-gray-700 border border-gray-200 leading-relaxed">{f}</div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-400 px-1 italic">No partner history yet.</p>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-6">
+                        <div className="space-y-3">
+                          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider px-1">Status History & SM Notes</p>
+                          {selectedLead.statusHistory?.length > 0 ? (
+                            <div className="space-y-3">
+                              {selectedLead.statusHistory.map((h: any, i: number) => (
+                                <div key={i} className="p-4 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-shadow">
+                                  <div className="flex justify-between items-center mb-2">
+                                    <span className="text-[10px] font-black uppercase text-blue-700 bg-blue-50 px-2.5 py-1 rounded-md tracking-wider">{h.status.replace(/_/g, ' ')}</span>
+                                    <span className="text-[11px] font-medium text-gray-400 bg-gray-50 px-2 py-1 rounded-full">{new Date(h.updatedAt?.toDate ? h.updatedAt.toDate() : h.updatedAt).toLocaleString()}</span>
+                                  </div>
+                                  <p className="text-sm text-gray-700 leading-relaxed mt-2">{h.notes}</p>
+                                  <p className="text-[10px] font-medium text-gray-400 mt-3 flex items-center gap-1 justify-end">
+                                    <User className="w-3 h-3" />
+                                    By: {h.updatedBy}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-gray-400 px-1 italic">No status history yet.</p>
+                          )}
+                        </div>
+
+                        <div className="p-5 bg-gray-50 rounded-2xl border border-gray-200">
+                          <p className="text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">SM General Feedback</p>
+                          <p className="text-sm text-gray-700 leading-relaxed">{selectedLead.smFeedback || 'No general feedback yet.'}</p>
+                        </div>
                       </div>
                     )}
                   </div>
                 </div>
-              ) : feedbackView === 'vendor' ? (
-                <>
-                  <div className="p-3 bg-blue-50 rounded-lg">
-                    <p className="text-xs font-bold text-blue-700 uppercase mb-1">Initial Vendor Notes</p>
-                    <p className="text-sm text-gray-700">{selectedLead.vendorNotes || 'No initial notes.'}</p>
-                  </div>
+              </div>
 
-                  <div className="space-y-2">
-                    <p className="text-xs font-bold text-gray-500 uppercase px-1">Partner/Vendor History</p>
-                    {selectedLead.partnerFeedback?.length > 0 ? (
-                      selectedLead.partnerFeedback.map((f: string, i: number) => (
-                        <div key={i} className="p-2 bg-gray-50 rounded text-sm text-gray-600 border border-gray-100">{f}</div>
-                      ))
-                    ) : (
-                      <p className="text-sm text-gray-400 px-1 italic">No partner history yet.</p>
-                    )}
+              {/* Footer / Form */}
+              <div className="p-6 border-t border-gray-100 bg-gray-50/50 shrink-0">
+                <form onSubmit={handleAddFeedback} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">
+                      {isSM || isAdmin ? 'Update SM Feedback' : 'Add Partner Feedback'}
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={feedback}
+                      onChange={(e) => setFeedback(e.target.value)}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none resize-none transition-all text-sm"
+                      placeholder="Enter your update here..."
+                    />
                   </div>
-                </>
-              ) : (
-                <>
-                  <div className="space-y-2">
-                    <p className="text-xs font-bold text-gray-500 uppercase px-1">Status History & SM Notes</p>
-                    {selectedLead.statusHistory?.length > 0 ? (
-                      selectedLead.statusHistory.map((h: any, i: number) => (
-                        <div key={i} className="p-3 bg-white border border-gray-100 rounded-lg shadow-sm">
-                          <div className="flex justify-between items-center mb-1">
-                            <span className="text-[10px] font-black uppercase text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{h.status.replace(/_/g, ' ')}</span>
-                            <span className="text-[10px] text-gray-400">{new Date(h.updatedAt?.toDate ? h.updatedAt.toDate() : h.updatedAt).toLocaleString()}</span>
+                  
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex-1 flex flex-col sm:flex-row gap-4">
+                      <div>
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          onChange={(e) => setFeedbackRecordingFile(e.target.files?.[0] || null)}
+                          className="hidden"
+                          id="feedback-recording-upload"
+                        />
+                        <label
+                          htmlFor="feedback-recording-upload"
+                          className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl cursor-pointer hover:bg-gray-50 transition-all text-sm font-bold shadow-sm whitespace-nowrap"
+                        >
+                          <Upload className="w-4 h-4" />
+                          {feedbackRecordingFile ? 'Change Audio' : 'Attach Recording'}
+                        </label>
+                        {feedbackRecordingFile && (
+                          <p className="text-[10px] text-gray-500 mt-1.5 truncate max-w-[200px] font-medium">
+                            {feedbackRecordingFile.name}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="relative">
+                          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <Link className="h-4 w-4 text-gray-400" />
                           </div>
-                          <p className="text-sm text-gray-700">{h.notes}</p>
-                          <p className="text-[10px] text-gray-400 mt-1">By: {h.updatedBy}</p>
+                          <input
+                            type="url"
+                            placeholder="Or paste Cloud URL here..."
+                            value={feedbackCloudUrl}
+                            onChange={(e) => setFeedbackCloudUrl(e.target.value)}
+                            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none text-sm transition-all shadow-sm"
+                          />
                         </div>
-                      ))
-                    ) : (
-                      <p className="text-sm text-gray-400 px-1 italic">No status history yet.</p>
-                    )}
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isUploadingFeedbackRecording || (!feedback && !feedbackRecordingFile && !feedbackCloudUrl)}
+                      className="px-6 py-2.5 bg-gray-900 text-white rounded-xl font-bold hover:bg-gray-800 disabled:opacity-50 flex items-center justify-center gap-2 transition-all shadow-lg shadow-gray-900/20 w-full sm:w-auto shrink-0"
+                    >
+                      {isUploadingFeedbackRecording && <RefreshCw className="w-4 h-4 animate-spin" />}
+                      {isUploadingFeedbackRecording ? 'Saving...' : 'Save Update'}
+                    </button>
                   </div>
-
-                  <div className="p-3 bg-gray-50 rounded-lg">
-                    <p className="text-xs font-bold text-gray-700 uppercase mb-1">SM General Feedback</p>
-                    <p className="text-sm text-gray-700">{selectedLead.smFeedback || 'No general feedback yet.'}</p>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <form onSubmit={handleAddFeedback} className="space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">
-                  {isSM || isAdmin ? 'Update SM Feedback' : 'Add Partner Feedback'}
-                </label>
-                <textarea
-                  rows={4}
-                  value={feedback}
-                  onChange={(e) => setFeedback(e.target.value)}
-                  className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
-                  placeholder="Enter your update here..."
-                />
+                </form>
               </div>
-              
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1">Add Call Recording (Optional)</label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="file"
-                    accept="audio/*"
-                    onChange={(e) => setFeedbackRecordingFile(e.target.files?.[0] || null)}
-                    className="hidden"
-                    id="feedback-recording-upload"
-                  />
-                  <label
-                    htmlFor="feedback-recording-upload"
-                    className="flex items-center justify-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg cursor-pointer hover:bg-gray-200 transition-all text-sm font-bold"
-                  >
-                    <Upload className="w-4 h-4" />
-                    {feedbackRecordingFile ? 'Change File' : 'Upload Audio'}
-                  </label>
-                  {feedbackRecordingFile && (
-                    <span className="text-xs text-gray-500 truncate max-w-[200px]">
-                      {feedbackRecordingFile.name}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-4 mt-6">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedLead(null);
-                    setFeedbackRecordingFile(null);
-                  }}
-                  className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
-                >
-                  Close
-                </button>
-                <button
-                  type="submit"
-                  disabled={isUploadingFeedbackRecording || (!feedback && !feedbackRecordingFile)}
-                  className="flex-1 px-4 py-2 bg-gray-900 text-white rounded-lg font-bold hover:bg-gray-800 disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {isUploadingFeedbackRecording && <RefreshCw className="w-4 h-4 animate-spin" />}
-                  {isUploadingFeedbackRecording ? 'Saving...' : 'Save Update'}
-                </button>
-              </div>
-            </form>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      {/* AI Chatbot */}
+      <Chatbot leads={leads} profile={profile} />
     </motion.div>
+  );
+}
+
+function Chatbot({ leads, profile }: { leads: any[], profile: any }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<{ role: string, content: string }[]>([
+    { role: 'assistant', content: `Hello ${profile?.displayName}! I'm your AI Sales Assistant. How can I help you manage your leads today?` }
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = { role: 'user', content: input };
+    setMessages(prev => [...prev, userMessage]);
+    setInput('');
+    setIsLoading(true);
+
+    try {
+      const response = await chatWithGemini([...messages, userMessage], { user: profile, leads });
+      setMessages(prev => [...prev, { role: 'assistant', content: response }]);
+    } catch (error) {
+      console.error("Chat error:", error);
+      setMessages(prev => [...prev, { role: 'assistant', content: "Sorry, I encountered an error. Please try again." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed bottom-6 right-6 z-[100]">
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+            className="bg-white rounded-3xl shadow-2xl border border-gray-100 w-[350px] sm:w-[400px] h-[500px] flex flex-col overflow-hidden mb-4"
+          >
+            {/* Header */}
+            <div className="bg-gray-900 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-blue-500 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/20">
+                  <Bot className="text-white w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-white font-bold text-sm">AI Sales Assistant</h3>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+                    <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Online</span>
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setIsOpen(false)} className="text-gray-400 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Messages */}
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${
+                    msg.role === 'user' 
+                      ? 'bg-gray-900 text-white rounded-tr-none shadow-lg shadow-gray-900/10' 
+                      : 'bg-white text-gray-700 border border-gray-100 rounded-tl-none shadow-sm'
+                  }`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-white p-3 rounded-2xl rounded-tl-none border border-gray-100 shadow-sm flex gap-1">
+                    <div className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce"></div>
+                    <div className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce [animation-delay:0.2s]"></div>
+                    <div className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-bounce [animation-delay:0.4s]"></div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Input */}
+            <form onSubmit={handleSend} className="p-4 bg-white border-t border-gray-100 flex gap-2">
+              <input
+                type="text"
+                placeholder="Ask me anything..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                className="flex-1 px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+              />
+              <button
+                type="submit"
+                disabled={!input.trim() || isLoading}
+                className="w-10 h-10 bg-gray-900 text-white rounded-xl flex items-center justify-center hover:bg-gray-800 disabled:opacity-50 transition-all shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-14 h-14 bg-gray-900 text-white rounded-2xl flex items-center justify-center shadow-2xl hover:bg-gray-800 transition-all hover:scale-105 active:scale-95 group relative"
+      >
+        <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full border-2 border-white"></div>
+        {isOpen ? <X className="w-6 h-6" /> : <Sparkles className="w-6 h-6 group-hover:rotate-12 transition-transform" />}
+      </button>
+    </div>
   );
 }

@@ -75,6 +75,7 @@ function MainLayout() {
   const { profile, isAdmin, isSM, isPartner, isVendor } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, show: true },
@@ -114,20 +115,25 @@ function MainLayout() {
       )}
 
       {/* Sidebar */}
-      <aside className={`
-        fixed md:sticky top-0 left-0 h-screen w-64 bg-white border-r border-gray-200 flex flex-col z-50 transition-transform duration-300 ease-in-out
-        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-      `}>
+      <aside 
+        className={`
+          fixed md:sticky top-0 left-0 h-screen bg-white border-r border-gray-200 flex flex-col z-50 transition-all duration-300 ease-in-out
+          ${isMobileMenuOpen ? 'translate-x-0 w-64' : '-translate-x-full md:translate-x-0'}
+          ${!isMobileMenuOpen && isSidebarCollapsed ? 'md:w-20' : 'md:w-64'}
+        `}
+        onMouseEnter={() => setIsSidebarCollapsed(false)}
+        onMouseLeave={() => setIsSidebarCollapsed(true)}
+      >
         <div className="p-6 border-b border-gray-100 hidden md:block">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="w-10 h-10 bg-gray-900 rounded-lg flex items-center justify-center shadow-md">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-gray-900 rounded-lg flex items-center justify-center shadow-md shrink-0">
               <Briefcase className="text-white w-6 h-6" />
             </div>
-            <span className="font-bold text-xl tracking-tight">CPQL</span>
+            <span className={`font-bold text-xl tracking-tight transition-opacity duration-300 ${isSidebarCollapsed ? 'opacity-0 w-0 overflow-hidden' : 'opacity-100'}`}>CPQL</span>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 pt-20 md:pt-6">
+        <div className="flex-1 overflow-y-auto p-4 md:p-4 pt-20 md:pt-4">
           <nav className="space-y-1.5">
             {navItems.filter(item => item.show).map((item) => (
               <button
@@ -140,31 +146,46 @@ function MainLayout() {
                   activeTab === item.id 
                     ? 'bg-gray-900 text-white shadow-md shadow-gray-900/20' 
                     : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                }`}
+                } ${isSidebarCollapsed && !isMobileMenuOpen ? 'justify-center md:px-0' : ''}`}
+                title={isSidebarCollapsed && !isMobileMenuOpen ? item.label : undefined}
               >
-                <item.icon className="w-5 h-5" />
-                {item.label}
+                <item.icon className="w-5 h-5 shrink-0" />
+                <span className={`transition-opacity duration-300 whitespace-nowrap ${isSidebarCollapsed && !isMobileMenuOpen ? 'opacity-0 w-0 overflow-hidden hidden md:block' : 'opacity-100'}`}>
+                  {item.label}
+                </span>
+                {/* Mobile label */}
+                <span className="md:hidden">{item.label}</span>
               </button>
             ))}
           </nav>
         </div>
 
-        <div className="p-4 md:p-6 border-t border-gray-100 bg-gray-50/50">
-          <div className="flex items-center gap-3 mb-4 px-2">
-            <div className="w-10 h-10 bg-gradient-to-br from-gray-800 to-gray-900 rounded-full flex items-center justify-center overflow-hidden shadow-sm">
+        <div className="p-4 md:p-4 border-t border-gray-100 bg-gray-50/50">
+          <div className={`flex items-center gap-3 mb-4 ${isSidebarCollapsed && !isMobileMenuOpen ? 'justify-center' : 'px-2'}`}>
+            <div className="w-10 h-10 bg-gradient-to-br from-gray-800 to-gray-900 rounded-full flex items-center justify-center overflow-hidden shadow-sm shrink-0">
               <span className="font-bold text-white">{profile?.displayName?.charAt(0)}</span>
             </div>
-            <div className="flex-1 min-w-0">
+            <div className={`flex-1 min-w-0 transition-opacity duration-300 ${isSidebarCollapsed && !isMobileMenuOpen ? 'opacity-0 w-0 overflow-hidden hidden md:block' : 'opacity-100'}`}>
+              <p className="text-sm font-bold text-gray-900 truncate">{profile?.displayName}</p>
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">{profile?.role?.replace(/_/g, ' ')}</p>
+            </div>
+            {/* Mobile profile info */}
+            <div className="md:hidden flex-1 min-w-0">
               <p className="text-sm font-bold text-gray-900 truncate">{profile?.displayName}</p>
               <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold">{profile?.role?.replace(/_/g, ' ')}</p>
             </div>
           </div>
           <button
             onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-red-600 bg-red-50 hover:bg-red-100 transition-all"
+            className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-red-600 bg-red-50 hover:bg-red-100 transition-all ${isSidebarCollapsed && !isMobileMenuOpen ? 'md:px-0' : ''}`}
+            title={isSidebarCollapsed && !isMobileMenuOpen ? "Logout" : undefined}
           >
-            <LogOut className="w-4 h-4" />
-            Logout
+            <LogOut className="w-4 h-4 shrink-0" />
+            <span className={`transition-opacity duration-300 ${isSidebarCollapsed && !isMobileMenuOpen ? 'opacity-0 w-0 overflow-hidden hidden md:block' : 'opacity-100'}`}>
+              Logout
+            </span>
+            {/* Mobile label */}
+            <span className="md:hidden">Logout</span>
           </button>
         </div>
       </aside>

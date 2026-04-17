@@ -6,6 +6,9 @@
 }
 
 @layer base {
+  html {
+    font-size: 13px; /* Scales down the entire UI by ~18.75% to match user preference of 80% zoom */
+  }
   body {
     @apply bg-gray-50 text-gray-900 font-sans;
   }

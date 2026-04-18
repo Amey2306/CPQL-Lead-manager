@@ -108,7 +108,11 @@ export default function LeadManagement() {
   const [statusUpdate, setStatusUpdate] = useState({
     leadIds: [] as string[],
     status: '',
-    notes: ''
+    notes: '',
+    createTask: false,
+    taskTitle: '',
+    taskDueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    taskAssignedTo: ''
   });
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -865,13 +869,21 @@ export default function LeadManagement() {
       setIsLostModalOpen(true);
       return;
     }
-    setStatusUpdate({ leadIds: [leadId], status, notes: '' });
+    setStatusUpdate({ 
+      leadIds: [leadId], 
+      status, 
+      notes: '',
+      createTask: false,
+      taskTitle: '',
+      taskDueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      taskAssignedTo: ''
+    });
     setIsStatusModalOpen(true);
   };
 
   const handleStatusSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { leadIds, status, notes } = statusUpdate;
+    const { leadIds, status, notes, createTask, taskTitle, taskDueDate, taskAssignedTo } = statusUpdate;
     const batch = writeBatch(db);
     
     leadIds.forEach(id => {
@@ -886,13 +898,35 @@ export default function LeadManagement() {
           updatedBy: profile?.displayName
         })
       });
+
+      if (createTask && taskTitle && taskAssignedTo) {
+        const taskRef = doc(collection(db, 'tasks'));
+        batch.set(taskRef, {
+          leadId: id,
+          title: taskTitle,
+          assignedTo: taskAssignedTo,
+          dueDate: taskDueDate,
+          createdBy: profile?.uid,
+          createdAt: serverTimestamp(),
+          completed: false
+        });
+      }
     });
 
     try {
       await batch.commit();
       setIsStatusModalOpen(false);
-      setStatusUpdate({ leadIds: [], status: '', notes: '' });
+      setStatusUpdate({ 
+        leadIds: [], 
+        status: '', 
+        notes: '',
+        createTask: false,
+        taskTitle: '',
+        taskDueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+        taskAssignedTo: ''
+      });
       if (leadIds.length > 1) setSelectedLeadIds([]);
+      showToast('Status updated successfully.', 'success');
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'leads/status-update');
     }
@@ -983,7 +1017,15 @@ export default function LeadManagement() {
       return;
     }
 
-    setStatusUpdate({ leadIds: selectedLeadIds, status, notes: '' });
+    setStatusUpdate({ 
+      leadIds: selectedLeadIds, 
+      status, 
+      notes: '',
+      createTask: false,
+      taskTitle: '',
+      taskDueDate: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      taskAssignedTo: ''
+    });
     setIsStatusModalOpen(true);
   };
 
@@ -3088,6 +3130,68 @@ export default function LeadManagement() {
                   className="w-full px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none resize-none"
                   placeholder={isTranscribing ? 'Transcribing your voice...' : 'Provide details about this status change...'}
                 />
+
+                <div className="pt-2 border-t border-gray-100">
+                  <label className="flex items-center gap-2 cursor-pointer mb-3">
+                    <input 
+                      type="checkbox" 
+                      checked={statusUpdate.createTask}
+                      onChange={(e) => setStatusUpdate({ ...statusUpdate, createTask: e.target.checked })}
+                      className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                    />
+                    <span className="text-sm font-bold text-gray-700">Create Follow-up Task</span>
+                  </label>
+                  
+                  {statusUpdate.createTask && (
+                    <div className="space-y-3 bg-gray-50 p-4 rounded-xl border border-gray-100">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Task Title</label>
+                        <input
+                          type="text"
+                          required={statusUpdate.createTask}
+                          value={statusUpdate.taskTitle}
+                          onChange={(e) => setStatusUpdate({ ...statusUpdate, taskTitle: e.target.value })}
+                          className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                          placeholder="e.g. Call back for negotiation"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Due Date</label>
+                          <input
+                            type="date"
+                            required={statusUpdate.createTask}
+                            value={statusUpdate.taskDueDate}
+                            onChange={(e) => setStatusUpdate({ ...statusUpdate, taskDueDate: e.target.value })}
+                            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Assign To</label>
+                          <select
+                            required={statusUpdate.createTask}
+                            value={statusUpdate.taskAssignedTo}
+                            onChange={(e) => setStatusUpdate({ ...statusUpdate, taskAssignedTo: e.target.value })}
+                            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+                          >
+                            <option value="">Select Assignee</option>
+                            <optgroup label="Sales Managers">
+                              {sms.map(sm => (
+                                <option key={sm.uid} value={sm.uid}>{sm.displayName}</option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Partners & Vendors">
+                              {partners.map(p => (
+                                <option key={p.uid} value={p.uid}>{p.companyName || p.displayName}</option>
+                              ))}
+                            </optgroup>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex gap-4 mt-8">
                   <button
                     type="button"

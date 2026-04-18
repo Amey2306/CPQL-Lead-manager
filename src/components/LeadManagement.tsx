@@ -92,6 +92,9 @@ export default function LeadManagement() {
     status: 'new',
     vendorNotes: '',
     partnerId: '',
+    agencyId: '',
+    sourceId: '',
+    subsourceId: '',
     callRecordingUrl: '',
     callAnalysis: null as any,
     tags: [] as string[]
@@ -110,6 +113,13 @@ export default function LeadManagement() {
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [leadToDelete, setLeadToDelete] = useState<string | null>(null);
+  const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState(false);
+  const [agencies, setAgencies] = useState<any[]>([]);
+  const [sources, setSources] = useState<any[]>([]);
+  const [subsources, setSubsources] = useState<any[]>([]);
+  const [isHierarchyModalOpen, setIsHierarchyModalOpen] = useState(false);
+  const [currentAgency, setCurrentAgency] = useState<any>(null);
+  const [currentSource, setCurrentSource] = useState<any>(null);
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [returnLeadId, setReturnLeadId] = useState('');
   const [returnReason, setReturnReason] = useState('');
@@ -234,6 +244,18 @@ export default function LeadManagement() {
       setAllTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'tasks'));
 
+    const unsubscribeAgencies = onSnapshot(collection(db, 'agencies'), (snapshot) => {
+      setAgencies(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'agencies'));
+
+    const unsubscribeSources = onSnapshot(collection(db, 'sources'), (snapshot) => {
+      setSources(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'sources'));
+
+    const unsubscribeSubsources = onSnapshot(collection(db, 'subsources'), (snapshot) => {
+      setSubsources(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'subsources'));
+
     return () => {
       unsubscribeSettings();
       unsubscribeLeads();
@@ -242,6 +264,9 @@ export default function LeadManagement() {
       unsubscribeAdmins();
       unsubscribePartners();
       unsubscribeAllTasks();
+      unsubscribeAgencies();
+      unsubscribeSources();
+      unsubscribeSubsources();
     };
   }, [profile, isAdmin, isSM, isPartner, isVendor, smViewMode]);
 
@@ -290,6 +315,42 @@ export default function LeadManagement() {
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedLeadIds.length === 0) return;
+    
+    try {
+      const batch = writeBatch(db);
+      selectedLeadIds.forEach(id => {
+        batch.delete(doc(db, 'leads', id));
+      });
+      await batch.commit();
+      setSelectedLeadIds([]);
+      setIsBulkDeleteModalOpen(false);
+      showToast(`${selectedLeadIds.length} leads deleted successfully`, 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'leads/bulk');
+    }
+  };
+
+  const handleHierarchyAction = async (type: 'agency' | 'source' | 'subsource', action: 'add' | 'delete', data: any) => {
+    const collectionName = type === 'agency' ? 'agencies' : type === 'source' ? 'sources' : 'subsources';
+    try {
+      if (action === 'add') {
+        await addDoc(collection(db, collectionName), {
+          ...data,
+          partnerId: profile?.vendorCompanyId || profile?.uid,
+          createdAt: serverTimestamp()
+        });
+        showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} added successfully`, 'success');
+      } else if (action === 'delete') {
+        await deleteDoc(doc(db, collectionName, data.id));
+        showToast(`${type.charAt(0).toUpperCase() + type.slice(1)} deleted successfully`, 'success');
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, collectionName);
     }
   };
 
@@ -546,6 +607,9 @@ export default function LeadManagement() {
         status: 'new', 
         vendorNotes: '', 
         partnerId: '', 
+        agencyId: '',
+        sourceId: '',
+        subsourceId: '',
         callRecordingUrl: '', 
         callAnalysis: null, 
         tags: [] 
@@ -760,6 +824,9 @@ export default function LeadManagement() {
         priority: editLeadData.priority || 'Medium',
         budget: editLeadData.budget,
         possession: editLeadData.possession,
+        agencyId: editLeadData.agencyId || '',
+        sourceId: editLeadData.sourceId || '',
+        subsourceId: editLeadData.subsourceId || '',
         callRecordingUrl: editLeadData.callRecordingUrl || '',
         callAnalysis: editLeadData.callAnalysis || null,
         tags: editLeadData.tags || [],
@@ -1241,6 +1308,15 @@ export default function LeadManagement() {
             </div>
           )}
           <div className="flex flex-wrap gap-2 w-full md:w-auto">
+            {selectedLeadIds.length > 0 && (
+              <button
+                onClick={() => setIsBulkDeleteModalOpen(true)}
+                className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-red-50 text-red-600 border border-red-100 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-red-100 transition-all shadow-sm text-sm md:text-base mr-2"
+              >
+                <Trash2 className="w-4 h-4 md:w-5 md:h-5" />
+                <span>Delete {selectedLeadIds.length} leads</span>
+              </button>
+            )}
             <button
               onClick={handleExportLeads}
               className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
@@ -1256,6 +1332,13 @@ export default function LeadManagement() {
                 >
                   <RefreshCw className="w-4 h-4 md:w-5 md:h-5" />
                   <span className="hidden sm:inline">Integrations</span>
+                </button>
+                <button
+                  onClick={() => setIsHierarchyModalOpen(true)}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm md:text-base"
+                >
+                  <Filter className="w-4 h-4 md:w-5 md:h-5" />
+                  <span className="hidden sm:inline">Hierarchy</span>
                 </button>
                 <button
                   onClick={() => {
@@ -1646,6 +1729,7 @@ export default function LeadManagement() {
                     {sortConfig.key === 'priority' && (sortConfig.direction === 'asc' ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />)}
                   </div>
                 </th>
+                <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Agency / Source</th>
                 <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Project</th>
                 {(isAdmin || isSM) && <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Partner/Vendor</th>}
                 {isSM && <th className="px-8 py-5 text-[11px] font-black text-gray-500 uppercase tracking-widest">Vendor Notes</th>}
@@ -1689,6 +1773,16 @@ export default function LeadManagement() {
                     }`}>
                       {lead.priority || 'Medium'}
                     </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-bold text-gray-900 truncate max-w-[150px]" title={agencies.find(a => a.id === lead.agencyId)?.name || 'Direct'}>
+                        {agencies.find(a => a.id === lead.agencyId)?.name || 'Direct'}
+                      </span>
+                      <span className="text-[10px] text-gray-400 font-medium truncate max-w-[150px]">
+                        {sources.find(s => s.id === lead.sourceId)?.name || '-'} {subsources.find(ss => ss.id === lead.subsourceId)?.name ? `/ ${subsources.find(ss => ss.id === lead.subsourceId)?.name}` : ''}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-6 py-4">
                     <span className="text-sm text-gray-700">
@@ -1959,6 +2053,54 @@ export default function LeadManagement() {
                     <option value="investor">Investor</option>
                   </select>
                 </div>
+
+                <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-6 p-6 bg-indigo-50 rounded-2xl border border-indigo-100">
+                  <div className="col-span-1 md:col-span-3">
+                    <h3 className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">Lead Source Hierarchy</h3>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Agency</label>
+                    <select
+                      value={editLeadData.agencyId || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, agencyId: e.target.value, sourceId: '', subsourceId: '' })}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                    >
+                      <option value="">Select Agency</option>
+                      {agencies.filter(a => a.partnerId === (editLeadData.partnerId || profile?.vendorCompanyId || profile?.uid)).map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Source</label>
+                    <select
+                      value={editLeadData.sourceId || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, sourceId: e.target.value, subsourceId: '' })}
+                      disabled={!editLeadData.agencyId}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all disabled:opacity-50"
+                    >
+                      <option value="">Select Source</option>
+                      {sources.filter(s => s.agencyId === editLeadData.agencyId).map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-gray-700 mb-2">Subsource</label>
+                    <select
+                      value={editLeadData.subsourceId || ''}
+                      onChange={(e) => setEditLeadData({ ...editLeadData, subsourceId: e.target.value })}
+                      disabled={!editLeadData.sourceId}
+                      className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-gray-900 outline-none transition-all disabled:opacity-50"
+                    >
+                      <option value="">Select Subsource</option>
+                      {subsources.filter(ss => ss.sourceId === editLeadData.sourceId).map(ss => (
+                        <option key={ss.id} value={ss.id}>{ss.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-gray-50 rounded-2xl border border-gray-200">
                   <div className="col-span-1 md:col-span-2">
                     <h3 className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">Professional Details</h3>
@@ -2566,6 +2708,51 @@ export default function LeadManagement() {
                   </select>
                 </div>
               )}
+              
+              <div className="col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase mb-1">Agency</label>
+                  <select
+                    value={newLead.agencyId}
+                    onChange={(e) => setNewLead({ ...newLead, agencyId: e.target.value, sourceId: '', subsourceId: '' })}
+                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
+                  >
+                    <option value="">Select Agency</option>
+                    {agencies.filter(a => a.partnerId === (newLead.partnerId || profile?.vendorCompanyId || profile?.uid)).map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase mb-1">Source</label>
+                  <select
+                    value={newLead.sourceId}
+                    onChange={(e) => setNewLead({ ...newLead, sourceId: e.target.value, subsourceId: '' })}
+                    disabled={!newLead.agencyId}
+                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all disabled:opacity-50"
+                  >
+                    <option value="">Select Source</option>
+                    {sources.filter(s => s.agencyId === newLead.agencyId).map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase mb-1">Subsource</label>
+                  <select
+                    value={newLead.subsourceId}
+                    onChange={(e) => setNewLead({ ...newLead, subsourceId: e.target.value })}
+                    disabled={!newLead.sourceId}
+                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all disabled:opacity-50"
+                  >
+                    <option value="">Select Subsource</option>
+                    {subsources.filter(ss => ss.sourceId === newLead.sourceId).map(ss => (
+                      <option key={ss.id} value={ss.id}>{ss.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               <div className="col-span-2">
                 <label className="block text-sm font-bold text-gray-700 mb-1">Priority</label>
                 <select
@@ -3595,6 +3782,166 @@ export default function LeadManagement() {
                     </button>
                   </div>
                 </form>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Bulk Delete Confirmation Modal */}
+      <AnimatePresence>
+        {isBulkDeleteModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+            >
+              <div className="flex flex-col items-center text-center">
+                <div className="w-20 h-20 bg-red-100 text-red-600 rounded-full flex items-center justify-center mb-6">
+                  <Trash2 className="w-10 h-10" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Bulk Delete?</h2>
+                <p className="text-sm text-gray-500 mb-8">
+                  Are you sure you want to delete <span className="font-bold text-red-600">{selectedLeadIds.length}</span> selected leads? This action is permanent and cannot be undone.
+                </p>
+                <div className="flex gap-4 w-full">
+                  <button
+                    type="button"
+                    onClick={() => setIsBulkDeleteModalOpen(false)}
+                    className="flex-1 px-4 py-3 border border-gray-200 text-gray-600 rounded-xl font-bold hover:bg-gray-50 transition-all"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleBulkDelete}
+                    className="flex-1 px-4 py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
+                  >
+                    Delete Leads
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Hierarchy Management Modal */}
+      <AnimatePresence>
+        {isHierarchyModalOpen && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl max-w-4xl w-full p-6 md:p-8 shadow-2xl max-h-[90vh] flex flex-col"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-2xl font-black text-gray-900 leading-none">Hierarchy Management</h2>
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-2">Manage Agencies, Platforms & Vendors</p>
+                </div>
+                <button onClick={() => setIsHierarchyModalOpen(false)} className="bg-gray-50 p-3 rounded-2xl text-gray-400 hover:text-gray-900 transition-all">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8 overflow-hidden">
+                {/* Agency Management */}
+                <div className="bg-gray-50 rounded-2xl border border-gray-200 p-5 flex flex-col h-full overflow-hidden">
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="p-2 bg-indigo-500 text-white rounded-xl">
+                      <User className="w-4 h-4" />
+                    </div>
+                    <h3 className="font-black text-xs uppercase tracking-widest text-gray-600">Agencies</h3>
+                  </div>
+                  <form 
+                    onSubmit={(e: any) => {
+                      e.preventDefault();
+                      if (e.target.agencyName.value) {
+                        handleHierarchyAction('agency', 'add', { name: e.target.agencyName.value });
+                        e.target.agencyName.value = '';
+                      }
+                    }}
+                    className="flex gap-2 mb-4"
+                  >
+                    <input name="agencyName" required placeholder="New Agency..." className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
+                    <button type="submit" className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700"><Check className="w-4 h-4" /></button>
+                  </form>
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                    {agencies.filter(a => isAdmin || a.partnerId === (profile?.vendorCompanyId || profile?.uid)).map(a => (
+                      <div key={a.id} className={`p-3 rounded-xl border flex items-center justify-between transition-all ${currentAgency?.id === a.id ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-100 hover:border-gray-200'}`}>
+                        <button onClick={() => { setCurrentAgency(a); setCurrentSource(null); }} className="flex-1 text-left text-sm font-bold truncate pr-3">{a.name}</button>
+                        <button onClick={() => handleHierarchyAction('agency', 'delete', { id: a.id })} className="text-gray-300 hover:text-red-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Source Management */}
+                <div className={`bg-gray-50 rounded-2xl border border-gray-200 p-5 flex flex-col h-full overflow-hidden transition-opacity ${!currentAgency ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="p-2 bg-blue-500 text-white rounded-xl">
+                      <Filter className="w-4 h-4" />
+                    </div>
+                    <h3 className="font-black text-xs uppercase tracking-widest text-gray-600">Platforms/Vendors</h3>
+                  </div>
+                  {currentAgency && <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-tighter mb-4">Under: {currentAgency.name}</p>}
+                  <form 
+                    onSubmit={(e: any) => {
+                      e.preventDefault();
+                      if (e.target.sourceName.value && currentAgency) {
+                        handleHierarchyAction('source', 'add', { name: e.target.sourceName.value, agencyId: currentAgency.id });
+                        e.target.sourceName.value = '';
+                      }
+                    }}
+                    className="flex gap-2 mb-4"
+                  >
+                    <input name="sourceName" required placeholder="New Platform..." className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                    <button type="submit" className="p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700"><Check className="w-4 h-4" /></button>
+                  </form>
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                    {sources.filter(s => s.agencyId === currentAgency?.id).map(s => (
+                      <div key={s.id} className={`p-3 rounded-xl border flex items-center justify-between transition-all ${currentSource?.id === s.id ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100 hover:border-gray-200'}`}>
+                        <button onClick={() => setCurrentSource(s)} className="flex-1 text-left text-sm font-bold truncate pr-3">{s.name}</button>
+                        <button onClick={() => handleHierarchyAction('source', 'delete', { id: s.id })} className="text-gray-300 hover:text-red-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Subsource Management */}
+                <div className={`bg-gray-50 rounded-2xl border border-gray-200 p-5 flex flex-col h-full overflow-hidden transition-opacity ${!currentSource ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <div className="flex items-center gap-2 mb-4">
+                    <div className="p-2 bg-green-500 text-white rounded-xl">
+                      <MessageSquare className="w-4 h-4" />
+                    </div>
+                    <h3 className="font-black text-xs uppercase tracking-widest text-gray-600">Subsources</h3>
+                  </div>
+                  {currentSource && <p className="text-[10px] font-bold text-blue-400 uppercase tracking-tighter mb-4">Under: {currentSource.name}</p>}
+                  <form 
+                    onSubmit={(e: any) => {
+                      e.preventDefault();
+                      if (e.target.subName.value && currentSource) {
+                        handleHierarchyAction('subsource', 'add', { name: e.target.subName.value, sourceId: currentSource.id, agencyId: currentAgency?.id });
+                        e.target.subName.value = '';
+                      }
+                    }}
+                    className="flex gap-2 mb-4"
+                  >
+                    <input name="subName" required placeholder="New Subsource..." className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-green-500" />
+                    <button type="submit" className="p-2 bg-green-600 text-white rounded-xl hover:bg-green-700"><Check className="w-4 h-4" /></button>
+                  </form>
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
+                    {subsources.filter(ss => ss.sourceId === currentSource?.id).map(ss => (
+                      <div key={ss.id} className={`p-3 rounded-xl border border-gray-100 bg-white flex items-center justify-between transition-all hover:border-gray-200`}>
+                        <span className="flex-1 text-sm font-bold truncate pr-3">{ss.name}</span>
+                        <button onClick={() => handleHierarchyAction('subsource', 'delete', { id: ss.id })} className="text-gray-300 hover:text-red-500 transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </motion.div>
           </div>

@@ -153,6 +153,9 @@ export default function LeadManagement() {
     dateFrom: '',
     dateTo: '',
     status: '',
+    agencyId: '',
+    sourceId: '',
+    subsourceId: '',
     scoreMin: '',
     scoreMax: '',
     taskDateFrom: '',
@@ -1167,6 +1170,9 @@ export default function LeadManagement() {
     if (filters.vendorId && lead.partnerId !== filters.vendorId) return false;
     if (filters.smId && lead.smId !== filters.smId) return false;
     if (filters.status && lead.status !== filters.status) return false;
+    if (filters.agencyId && lead.agencyId !== filters.agencyId) return false;
+    if (filters.sourceId && lead.sourceId !== filters.sourceId) return false;
+    if (filters.subsourceId && lead.subsourceId !== filters.subsourceId) return false;
     
     if (filters.dateFrom || filters.dateTo) {
       const leadDate = lead.createdAt?.toDate ? lead.createdAt.toDate() : new Date(lead.createdAt);
@@ -1542,6 +1548,44 @@ export default function LeadManagement() {
             </div>
 
             <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Agency</label>
+              <select
+                value={filters.agencyId}
+                onChange={(e) => setFilters({ ...filters, agencyId: e.target.value, sourceId: '', subsourceId: '' })}
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900"
+              >
+                <option value="">All Agencies</option>
+                {agencies.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Source</label>
+              <select
+                value={filters.sourceId}
+                onChange={(e) => setFilters({ ...filters, sourceId: e.target.value, subsourceId: '' })}
+                disabled={!filters.agencyId}
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-50"
+              >
+                <option value="">All Sources</option>
+                {sources.filter(s => s.agencyId === filters.agencyId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Subsource</label>
+              <select
+                value={filters.subsourceId}
+                onChange={(e) => setFilters({ ...filters, subsourceId: e.target.value })}
+                disabled={!filters.sourceId}
+                className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-50"
+              >
+                <option value="">All Subsources</option>
+                {subsources.filter(ss => ss.sourceId === filters.sourceId).map(ss => <option key={ss.id} value={ss.id}>{ss.name}</option>)}
+              </select>
+            </div>
+
+            <div>
               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Lead Date Range</label>
               <div className="flex items-center gap-2">
                 <input
@@ -1614,7 +1658,7 @@ export default function LeadManagement() {
             <div className="flex items-end">
               <button
                 onClick={() => setFilters({
-                  search: '', projectId: '', vendorId: '', smId: '', dateFrom: '', dateTo: '', status: '', scoreMin: '', scoreMax: '', taskDateFrom: '', taskDateTo: '', tags: ''
+                  search: '', projectId: '', vendorId: '', smId: '', agencyId: '', sourceId: '', subsourceId: '', dateFrom: '', dateTo: '', status: '', scoreMin: '', scoreMax: '', taskDateFrom: '', taskDateTo: '', tags: ''
                 })}
                 className="w-full px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm font-bold hover:bg-gray-200 transition-all"
               >
@@ -3495,6 +3539,44 @@ export default function LeadManagement() {
                                  )}
                                </div>
                              </div>
+
+                             {/* Suggested Tasks */}
+                             {selectedLead.callAnalysis.suggestedTasks && selectedLead.callAnalysis.suggestedTasks.length > 0 && (
+                               <div className="space-y-4 pt-4 border-t border-gray-100">
+                                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                                   <CheckSquare className="w-3 h-3 text-blue-400" />
+                                   Suggested Next Steps
+                                 </label>
+                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                   {selectedLead.callAnalysis.suggestedTasks.map((task: any, i: number) => (
+                                     <div key={i} className="bg-white p-4 rounded-xl border border-blue-100 shadow-sm flex flex-col justify-between">
+                                       <div>
+                                         <div className="flex justify-between items-start mb-2 gap-2">
+                                           <h4 className="font-bold text-sm text-gray-900 leading-tight">{task.title}</h4>
+                                           <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded uppercase shrink-0">In {task.dueInDays} days</span>
+                                         </div>
+                                         <p className="text-xs text-gray-600 mb-4">{task.description}</p>
+                                       </div>
+                                       <button
+                                         onClick={(e) => {
+                                           e.preventDefault();
+                                           setNewTask({
+                                             title: task.title,
+                                             dueDate: new Date(Date.now() + task.dueInDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                                             assignedTo: isSM ? (profile?.uid || '') : ''
+                                           });
+                                           setFeedbackView('tasks');
+                                         }}
+                                         className="w-full text-[10px] font-bold text-blue-600 bg-blue-50 py-2 rounded-lg hover:bg-blue-100 transition-colors uppercase tracking-widest flex justify-center items-center gap-2"
+                                       >
+                                         <Calendar className="w-3 h-3" />
+                                         Schedule Task
+                                       </button>
+                                     </div>
+                                   ))}
+                                 </div>
+                               </div>
+                             )}
 
                              {/* Transcript */}
                              {selectedLead.callAnalysis.transcription && (

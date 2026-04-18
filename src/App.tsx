@@ -193,7 +193,7 @@ function MainLayout() {
 
       {/* Main Content */}
       <main className="flex-1 w-full min-w-0 pt-16 pb-24 md:pt-0 md:pb-0 relative overflow-x-hidden">
-        <div className="p-4 md:p-8 max-w-[1600px] mx-auto min-h-screen">
+        <div className="px-2 py-4 md:p-8 max-w-[1600px] mx-auto min-h-screen">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}

@@ -1327,19 +1327,19 @@ export default function LeadManagement() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-6 md:space-y-8"
     >
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3 md:gap-4">
         <div>
-          <h1 className="text-2xl md:text-3xl font-bold text-gray-900 tracking-tight">Lead Management</h1>
-          <p className="text-sm md:text-base text-gray-500 mt-1">
+          <h1 className="text-xl md:text-3xl font-bold text-gray-900 tracking-tight">Lead Management</h1>
+          <p className="text-xs md:text-base text-gray-500 mt-1">
             {isSM ? `Manage your assigned leads and track progress.` : `Track and manage leads across all projects.`}
           </p>
         </div>
         <div className="flex flex-wrap gap-2 md:gap-3 w-full md:w-auto">
           {isSM && (
-            <div className="flex bg-gray-100 p-1 rounded-xl w-full md:w-auto mb-2 md:mb-0 md:mr-4">
+            <div className="flex bg-gray-100 p-1 rounded-xl w-full md:w-auto mb-1 md:mb-0 md:mr-4">
               <button
                 onClick={() => setSmViewMode('my')}
-                className={`flex-1 md:flex-none px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                className={`flex-1 md:flex-none px-4 py-1.5 md:py-2 text-[10px] md:text-xs font-bold rounded-lg transition-all ${
                   smViewMode === 'my' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -1347,7 +1347,7 @@ export default function LeadManagement() {
               </button>
               <button
                 onClick={() => setSmViewMode('all')}
-                className={`flex-1 md:flex-none px-4 py-2 text-xs font-bold rounded-lg transition-all ${
+                className={`flex-1 md:flex-none px-4 py-1.5 md:py-2 text-[10px] md:text-xs font-bold rounded-lg transition-all ${
                   smViewMode === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -1355,37 +1355,37 @@ export default function LeadManagement() {
               </button>
             </div>
           )}
-          <div className="flex overflow-x-auto sm:flex-wrap gap-2 w-full md:w-auto pb-2 md:pb-0 scrollbar-hide snap-x">
+          <div className="flex overflow-x-auto sm:flex-wrap gap-2 w-full md:w-auto pb-1 md:pb-0 scrollbar-hide snap-x">
             {selectedLeadIds.length > 0 && (
               <button
                 onClick={() => setIsBulkDeleteModalOpen(true)}
-                className="snap-start shrink-0 flex items-center justify-center gap-2 bg-red-50 text-red-600 border border-red-100 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-red-100 transition-all shadow-sm text-sm"
+                className="snap-start shrink-0 flex items-center justify-center gap-1.5 md:gap-2 bg-red-50 text-red-600 border border-red-100 px-3 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl font-bold hover:bg-red-100 transition-all shadow-sm text-[11px] md:text-sm"
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
                 <span>Delete {selectedLeadIds.length} leads</span>
               </button>
             )}
             <button
               onClick={handleExportLeads}
-              className="snap-start shrink-0 flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm"
+              className="snap-start shrink-0 flex items-center justify-center gap-1.5 md:gap-2 bg-white border border-gray-200 text-gray-900 px-3 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-[11px] md:text-sm"
             >
-              <Download className="w-4 h-4" />
+              <Download className="w-3.5 h-3.5 md:w-4 md:h-4" />
               <span>Export</span>
             </button>
             {(isPartner || isVendor || isAdmin) && (
               <>
                 <button
                   onClick={() => setIsIntegrationModalOpen(true)}
-                  className="snap-start shrink-0 flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm"
+                  className="snap-start shrink-0 flex items-center justify-center gap-1.5 md:gap-2 bg-white border border-gray-200 text-gray-900 px-3 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-[11px] md:text-sm"
                 >
-                  <RefreshCw className="w-4 h-4" />
+                  <RefreshCw className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <span>Integrations</span>
                 </button>
                 <button
                   onClick={() => setIsHierarchyModalOpen(true)}
-                  className="snap-start shrink-0 flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm"
+                  className="snap-start shrink-0 flex items-center justify-center gap-1.5 md:gap-2 bg-white border border-gray-200 text-gray-900 px-3 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-[11px] md:text-sm"
                 >
-                  <Filter className="w-4 h-4" />
+                  <Filter className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <span>Hierarchy</span>
                 </button>
                 <button
@@ -1394,16 +1394,16 @@ export default function LeadManagement() {
                     setBulkUploadVendor('');
                     setIsBulkModalOpen(true);
                   }}
-                  className="snap-start shrink-0 flex items-center justify-center gap-2 bg-white border border-gray-200 text-gray-900 px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-sm"
+                  className="snap-start shrink-0 flex items-center justify-center gap-1.5 md:gap-2 bg-white border border-gray-200 text-gray-900 px-3 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm text-[11px] md:text-sm"
                 >
-                  <Upload className="w-4 h-4" />
+                  <Upload className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <span>Bulk Upload</span>
                 </button>
                 <button
                   onClick={() => setIsModalOpen(true)}
-                  className="snap-start shrink-0 flex items-center justify-center gap-2 bg-gray-900 text-white px-4 md:px-6 py-2.5 md:py-3 rounded-xl font-bold hover:bg-gray-800 transition-all shadow-lg hover:shadow-xl active:scale-95 text-sm"
+                  className="snap-start shrink-0 flex items-center justify-center gap-1.5 md:gap-2 bg-gray-900 text-white px-3 md:px-6 py-2 md:py-3 rounded-lg md:rounded-xl font-bold hover:bg-gray-800 transition-all shadow-sm md:shadow-lg hover:shadow-xl active:scale-95 text-[11px] md:text-sm"
                 >
-                  <Plus className="w-4 h-4" />
+                  <Plus className="w-3.5 h-3.5 md:w-4 md:h-4" />
                   <span>Drop Lead</span>
                 </button>
               </>
@@ -1417,24 +1417,24 @@ export default function LeadManagement() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6"
+          className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-6"
         >
-          <div className="bg-gradient-to-br from-blue-600 to-blue-700 p-4 md:p-6 rounded-2xl md:rounded-3xl text-white shadow-xl shadow-blue-200/50 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
-            <p className="text-blue-100 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">My Total Leads</p>
-            <p className="text-3xl md:text-4xl font-black">{myLeadsCount}</p>
+          <div className="bg-gradient-to-br from-blue-600 to-blue-700 p-3 md:p-6 rounded-xl md:rounded-3xl text-white shadow-md md:shadow-xl shadow-blue-200/50 relative overflow-hidden group">
+            <div className="absolute top-0 right-0 w-24 md:w-32 h-24 md:h-32 bg-white/10 rounded-full blur-2xl -mr-8 md:-mr-10 -mt-8 md:-mt-10 transition-transform group-hover:scale-110"></div>
+            <p className="text-blue-100 text-[10px] md:text-sm font-bold uppercase tracking-wider mb-0.5 md:mb-1">My Total Leads</p>
+            <p className="text-2xl md:text-4xl font-black">{myLeadsCount}</p>
           </div>
-          <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-            <p className="text-gray-400 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">New / Pending</p>
-            <p className="text-3xl md:text-4xl font-black text-gray-900">{pendingLeadsCount}</p>
+          <div className="bg-white p-3 md:p-6 rounded-xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+            <p className="text-gray-400 text-[10px] md:text-sm font-bold uppercase tracking-wider mb-0.5 md:mb-1">New / Pending</p>
+            <p className="text-2xl md:text-4xl font-black text-gray-900">{pendingLeadsCount}</p>
           </div>
-          <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-            <p className="text-gray-400 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">Converted</p>
-            <p className="text-3xl md:text-4xl font-black text-green-600">{leads.filter(l => l.smId === profile.uid && l.status === 'converted').length}</p>
+          <div className="bg-white p-3 md:p-6 rounded-xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+            <p className="text-gray-400 text-[10px] md:text-sm font-bold uppercase tracking-wider mb-0.5 md:mb-1">Converted</p>
+            <p className="text-2xl md:text-4xl font-black text-green-600">{leads.filter(l => l.smId === profile.uid && l.status === 'converted').length}</p>
           </div>
-          <div className="bg-white p-4 md:p-6 rounded-2xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-            <p className="text-gray-400 text-xs md:text-sm font-bold uppercase tracking-wider mb-1">Conversion Rate</p>
-            <p className="text-3xl md:text-4xl font-black text-blue-600">
+          <div className="bg-white p-3 md:p-6 rounded-xl md:rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+            <p className="text-gray-400 text-[10px] md:text-sm font-bold uppercase tracking-wider mb-0.5 md:mb-1">Conversion Rate</p>
+            <p className="text-2xl md:text-4xl font-black text-blue-600">
               {myLeadsCount > 0 ? ((leads.filter(l => l.smId === profile.uid && l.status === 'converted').length / myLeadsCount) * 100).toFixed(1) : 0}%
             </p>
           </div>
@@ -1448,22 +1448,22 @@ export default function LeadManagement() {
             initial={{ y: 100, opacity: 0, x: '-50%' }}
             animate={{ y: 0, opacity: 1, x: '-50%' }}
             exit={{ y: 100, opacity: 0, x: '-50%' }}
-            className="fixed bottom-24 md:bottom-8 left-1/2 bg-gray-900 text-white px-4 md:px-6 py-3 md:py-4 rounded-2xl shadow-2xl flex flex-wrap items-center gap-4 md:gap-6 z-50 w-[94%] md:w-auto justify-center md:justify-start"
+            className="fixed bottom-24 md:bottom-8 left-1/2 bg-gray-900 text-white px-3 md:px-6 py-2.5 md:py-4 rounded-xl md:rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 md:gap-6 z-50 w-[94%] md:w-auto justify-center md:justify-start"
           >
-            <div className="flex items-center gap-3 pr-4 md:pr-6 border-r border-gray-700">
-              <div className="bg-blue-500 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold">
+            <div className="flex items-center gap-2 md:gap-3 pr-3 md:pr-6 border-r border-gray-700">
+              <div className="bg-blue-500 text-white w-5 h-5 md:w-6 md:h-6 rounded-full flex items-center justify-center text-[10px] md:text-xs font-bold">
                 {selectedLeadIds.length}
               </div>
-              <span className="text-sm font-medium hidden sm:inline">Leads Selected</span>
+              <span className="text-xs md:text-sm font-medium hidden sm:inline">Leads Selected</span>
             </div>
             
-            <div className="flex flex-wrap items-center gap-2 md:gap-4">
+            <div className="flex flex-wrap items-center gap-1.5 md:gap-4">
               {(isAdmin || isSM) && (
-                <div className="flex items-center gap-2">
-                  <Check className="w-4 h-4 text-gray-400 hidden sm:block" />
+                <div className="flex items-center gap-1 md:gap-2">
+                  <Check className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-400 hidden sm:block" />
                   <select
                     onChange={(e) => handleBulkStatusUpdate(e.target.value)}
-                    className="bg-gray-800 border border-gray-700 text-xs md:text-sm rounded-lg px-2 md:px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[120px] md:max-w-none"
+                    className="bg-gray-800 border border-gray-700 text-[10px] md:text-sm rounded-md md:rounded-lg px-1.5 md:px-3 py-1 md:py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[90px] md:max-w-none"
                     value=""
                   >
                     <option value="" disabled>Status</option>
@@ -1475,11 +1475,11 @@ export default function LeadManagement() {
               )}
 
               {(isAdmin || isSM || isPartner || isVendor) && (
-                <div className="flex items-center gap-2">
-                  <User className="w-4 h-4 text-gray-400 hidden sm:block" />
+                <div className="flex items-center gap-1 md:gap-2">
+                  <User className="w-3.5 h-3.5 md:w-4 md:h-4 text-gray-400 hidden sm:block" />
                   <select
                     onChange={(e) => handleBulkAssignSM(e.target.value)}
-                    className="bg-gray-800 border border-gray-700 text-xs md:text-sm rounded-lg px-2 md:px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[120px] md:max-w-none"
+                    className="bg-gray-800 border border-gray-700 text-[10px] md:text-sm rounded-md md:rounded-lg px-1.5 md:px-3 py-1 md:py-1.5 focus:ring-2 focus:ring-blue-500 outline-none max-w-[90px] md:max-w-none"
                     value=""
                   >
                     <option value="" disabled>Assign SM</option>
@@ -1490,7 +1490,7 @@ export default function LeadManagement() {
 
               <button
                 onClick={() => setSelectedLeadIds([])}
-                className="text-xs md:text-sm text-gray-400 hover:text-white transition-colors ml-1 md:ml-2"
+                className="text-[10px] md:text-sm text-gray-400 hover:text-white transition-colors ml-0.5 md:ml-2 font-bold"
               >
                 Cancel
               </button>
@@ -1504,26 +1504,26 @@ export default function LeadManagement() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
-        className="bg-white p-2 md:p-3 rounded-2xl border border-gray-100 shadow-xl shadow-gray-200/50"
+        className="bg-white p-2 border border-gray-100 shadow-sm rounded-xl md:rounded-2xl"
       >
-        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2">
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-1.5 md:gap-2">
           <div className="flex-1 relative">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 md:w-5 md:h-5" />
             <input
               type="text"
               placeholder="Search leads by name or ID"
               value={filters.search}
               onChange={(e) => setFilters({ ...filters, search: e.target.value })}
-              className="w-full pl-12 pr-4 py-3 bg-gray-50/50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-gray-900 focus:bg-white outline-none transition-all text-sm md:text-base"
+              className="w-full pl-9 pr-4 py-2 md:py-3 bg-gray-50/50 border border-gray-100 rounded-lg md:rounded-xl focus:ring-2 focus:ring-gray-900 focus:bg-white outline-none transition-all text-xs md:text-base"
             />
           </div>
           <button 
             onClick={() => setIsFilterOpen(!isFilterOpen)}
-            className={`flex items-center justify-center gap-2 px-6 py-3 rounded-xl border transition-all font-medium text-sm md:text-base ${
+            className={`flex items-center justify-center gap-2 px-4 py-2 md:px-6 md:py-3 rounded-lg md:rounded-xl border transition-all font-medium text-xs md:text-base ${
               isFilterOpen ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
             }`}
           >
-            <Filter className="w-4 h-4" />
+            <Filter className="w-3.5 h-3.5 md:w-4 md:h-4" />
             Filters
           </button>
         </div>
@@ -1718,41 +1718,41 @@ export default function LeadManagement() {
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ delay: 0.3 }}
-        className="mt-6 p-6 bg-gradient-to-r from-gray-900 via-indigo-950 to-indigo-900 rounded-3xl shadow-2xl relative overflow-hidden group"
+        className="mt-4 md:mt-6 p-4 md:p-6 bg-gradient-to-r from-gray-900 via-indigo-950 to-indigo-900 rounded-2xl md:rounded-3xl shadow-lg relative overflow-hidden group"
       >
         <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2 blur-3xl group-hover:bg-white/10 transition-all duration-500"></div>
         <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-500/5 rounded-full translate-y-1/2 -translate-x-1/2 blur-2xl group-hover:bg-indigo-500/10 transition-all duration-500"></div>
 
-        <div className="relative flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="flex-1">
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 bg-indigo-500/20 rounded-xl backdrop-blur-md border border-indigo-400/20">
-                <Sparkles className="w-5 h-5 text-indigo-300" />
+        <div className="relative flex flex-col md:flex-row items-start md:items-center justify-between gap-4 md:gap-6">
+          <div className="flex-1 w-full">
+            <div className="flex items-center gap-2 md:gap-3 mb-1.5 md:mb-2">
+              <div className="p-1.5 md:p-2 bg-indigo-500/20 rounded-lg md:rounded-xl backdrop-blur-md border border-indigo-400/20">
+                <Sparkles className="w-4 h-4 md:w-5 md:h-5 text-indigo-300" />
               </div>
-              <h3 className="text-lg font-black text-white tracking-tight">Lead Portfolio Summary</h3>
+              <h3 className="text-base md:text-lg font-black text-white tracking-tight">Lead Portfolio Summary</h3>
             </div>
             {!collectiveCallSummary && !isGeneratingCollectiveSummary ? (
-              <p className="text-indigo-200/60 text-sm max-w-xl">
+              <p className="text-indigo-200/60 text-xs md:text-sm max-w-xl">
                 Get a high-level intelligence summary of all {sortedLeads.length} leads in the current view. 
                 AI will analyze common themes, customer sentiment, and strategic blockers.
               </p>
             ) : isGeneratingCollectiveSummary ? (
-              <div className="flex items-center gap-4 py-2">
+              <div className="flex items-center gap-3 py-1.5 md:py-2">
                 <div className="flex gap-1">
-                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                  <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"></div>
+                  <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                  <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                  <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce"></div>
                 </div>
-                <p className="text-indigo-300 text-sm font-bold uppercase tracking-widest animate-pulse">Scanning voice intelligence & history...</p>
+                <p className="text-indigo-300 text-xs text-sm font-bold uppercase tracking-widest animate-pulse">Scanning voice intelligence & history...</p>
               </div>
             ) : (
-              <div className="space-y-4">
-                <p className="text-indigo-50 text-sm leading-relaxed border-l-2 border-indigo-500/50 pl-4 py-1 italic">
+              <div className="space-y-3 md:space-y-4">
+                <p className="text-indigo-50 text-xs md:text-sm leading-relaxed border-l-2 border-indigo-500/50 pl-3 md:pl-4 py-1 italic">
                   "{collectiveCallSummary.summary}"
                 </p>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-1.5 md:gap-2">
                   {collectiveCallSummary.topPainPoints?.map((pt: string, i: number) => (
-                    <span key={i} className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[10px] font-bold text-indigo-300 uppercase tracking-wider">
+                    <span key={i} className="px-2 md:px-3 py-0.5 md:py-1 bg-white/5 border border-white/10 rounded-full text-[9px] md:text-[10px] font-bold text-indigo-300 uppercase tracking-wider">
                       {pt}
                     </span>
                   ))}
@@ -1761,22 +1761,22 @@ export default function LeadManagement() {
             )}
           </div>
           
-          <div className="flex flex-col items-center md:items-end gap-3 min-w-[200px]">
+          <div className="flex flex-col items-start md:items-end w-full md:w-auto gap-2 md:gap-3 md:min-w-[200px]">
             <button
               onClick={handleGenerateCollectiveSummary}
               disabled={isGeneratingCollectiveSummary || sortedLeads.length === 0}
-              className="w-full md:w-auto px-6 py-3 bg-white text-indigo-900 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-indigo-50 transition-all shadow-xl shadow-indigo-500/20 disabled:opacity-50 flex items-center justify-center gap-2 group/btn"
+              className="w-full md:w-auto px-4 md:px-6 py-2.5 md:py-3 bg-white text-indigo-900 rounded-xl md:rounded-2xl font-black text-[10px] md:text-sm uppercase tracking-widest hover:bg-indigo-50 transition-all shadow-md md:shadow-xl shadow-indigo-500/20 disabled:opacity-50 flex items-center justify-center gap-2 group/btn"
             >
-              <RefreshCw className={`w-4 h-4 ${isGeneratingCollectiveSummary ? 'animate-spin' : 'group-hover/btn:rotate-180 transition-transform duration-500'}`} />
+              <RefreshCw className={`w-3 h-3 md:w-4 md:h-4 ${isGeneratingCollectiveSummary ? 'animate-spin' : 'group-hover/btn:rotate-180 transition-transform duration-500'}`} />
               {collectiveCallSummary ? 'Update Intelligence' : 'Generate Summary'}
             </button>
             {collectiveCallSummary?.strategicAdvice && (
-              <div className="bg-indigo-400/10 border border-indigo-400/20 rounded-xl p-3 max-w-[280px]">
-                <div className="flex items-center gap-2 mb-1 text-indigo-300">
+              <div className="bg-indigo-400/10 border border-indigo-400/20 rounded-xl p-2.5 md:p-3 w-full md:max-w-[280px]">
+                <div className="flex items-center gap-1.5 md:gap-2 mb-1 text-indigo-300">
                   <Bot className="w-3 h-3" />
-                  <span className="text-[10px] font-black uppercase tracking-tighter">Strategic Advice</span>
+                  <span className="text-[9px] md:text-[10px] font-black uppercase tracking-tighter">Strategic Advice</span>
                 </div>
-                <p className="text-[11px] text-indigo-100 font-medium leading-tight">{collectiveCallSummary.strategicAdvice}</p>
+                <p className="text-[10px] md:text-[11px] text-indigo-100 font-medium leading-tight">{collectiveCallSummary.strategicAdvice}</p>
               </div>
             )}
           </div>
@@ -1784,7 +1784,7 @@ export default function LeadManagement() {
       </motion.div>
 
       {/* Leads Table & Mobile List */}
-      <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden mb-12">
+      <div className="bg-white rounded-2xl md:rounded-3xl shadow-sm border border-gray-100 overflow-hidden mb-12 mt-4 md:mt-6">
         {/* Mobile View */}
         <div className="md:hidden block">
           <div className="divide-y divide-gray-100">
@@ -1792,22 +1792,22 @@ export default function LeadManagement() {
               sortedLeads.map((lead) => (
                 <div 
                   key={lead.id} 
-                  className={`p-4 space-y-3 relative hover:bg-gray-50 transition-colors ${selectedLeadIds.includes(lead.id) ? 'bg-blue-50/30' : ''}`}
+                  className={`p-3 space-y-2 relative hover:bg-gray-50 transition-colors ${selectedLeadIds.includes(lead.id) ? 'bg-blue-50/30' : ''}`}
                 >
-                  <div className="flex justify-between items-start gap-4">
-                    <div className="flex items-start gap-3">
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="flex items-start gap-2">
                       <div className="pt-0.5">
                         <input 
                           type="checkbox" 
-                          className="w-4 h-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
+                          className="w-3.5 h-3.5 rounded border-gray-300 text-gray-900 focus:ring-gray-900"
                           checked={selectedLeadIds.includes(lead.id)}
                           onChange={() => toggleSelectLead(lead.id)}
                         />
                       </div>
-                      <div className="flex flex-col">
-                        <div className="flex flex-wrap items-center gap-2 mb-1">
-                          <span className="font-bold text-gray-900 text-sm leading-tight">{lead.customerName}</span>
-                          <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-widest ${
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
+                          <span className="font-bold text-gray-900 text-xs sm:text-sm leading-tight truncate max-w-[140px]">{lead.customerName}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest shrink-0 ${
                             lead.priority === 'High' ? 'bg-red-100 text-red-700' :
                             lead.priority === 'Medium' ? 'bg-orange-100 text-orange-700' :
                             'bg-blue-100 text-blue-700'
@@ -1815,16 +1815,16 @@ export default function LeadManagement() {
                             {lead.priority || 'Medium'}
                           </span>
                         </div>
-                        <span className="text-xs text-gray-500 font-mono mb-2">{lead.enquiryId}</span>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider w-fit ${
+                        <span className="text-[10px] text-gray-500 font-mono mb-1">{lead.enquiryId}</span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider w-fit ${
                             lead.status === 'converted' ? 'bg-green-100 text-green-700' :
                             lead.status === 'lost' ? 'bg-red-100 text-red-700' :
                             'bg-blue-100 text-blue-700'
                           }`}>
                             {lead.status.replace(/_/g, ' ')}
                           </span>
-                          <span className="text-xs font-semibold text-gray-700 truncate max-w-[120px]">
+                          <span className="text-[10px] font-semibold text-gray-600 truncate max-w-[100px]">
                             {projects.find(p => p.id === lead.projectId)?.name || 'Unknown Project'}
                           </span>
                         </div>
@@ -1832,26 +1832,26 @@ export default function LeadManagement() {
                     </div>
                     {/* Score (if available) */}
                     {lead.callAnalysis?.score && (
-                      <div className="shrink-0 flex flex-col items-center gap-1">
-                        <div className="w-9 h-9 rounded-full border-2 border-gray-100 flex items-center justify-center relative bg-white shadow-sm">
-                          <span className="absolute text-[10px] font-black">{lead.callAnalysis?.score}</span>
+                      <div className="shrink-0 flex flex-col items-center ml-1">
+                        <div className="w-7 h-7 rounded-full border border-gray-200 flex items-center justify-center relative bg-white shadow-sm">
+                          <span className="absolute text-[8px] font-black">{lead.callAnalysis?.score}</span>
                         </div>
                       </div>
                     )}
                   </div>
                   
                   {/* Footer Stats */}
-                  <div className="flex items-center justify-between pt-2 border-t border-gray-50 mt-2">
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1 text-[10px] text-gray-500 font-medium">
-                        <User className="w-3 h-3" />
-                        <span className="truncate max-w-[80px]">
+                  <div className="flex items-center justify-between pt-1.5 border-t border-gray-50 mt-1">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-0.5 text-[9px] text-gray-500 font-medium">
+                        <User className="w-2.5 h-2.5" />
+                        <span className="truncate max-w-[70px]">
                           {sms.find(sm => sm.uid === lead.assignedTo)?.displayName || 'Unassigned'}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 text-[10px] text-gray-500 font-medium">
-                        <Calendar className="w-3 h-3" />
-                        {lead.createdAt?.toDate ? new Date(lead.createdAt.toDate()).toLocaleDateString() : 'N/A'}
+                      <div className="flex items-center gap-0.5 text-[9px] text-gray-500 font-medium">
+                        <Calendar className="w-2.5 h-2.5" />
+                        {lead.createdAt?.toDate ? new Date(lead.createdAt.toDate()).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' }) : 'N/A'}
                       </div>
                     </div>
                     
@@ -1859,15 +1859,15 @@ export default function LeadManagement() {
                     <div className="flex items-center gap-1 shrink-0">
                       <button 
                         onClick={() => setSelectedLead(lead)}
-                        className="p-1.5 bg-gray-50 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all"
+                        className="p-1 bg-gray-50 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all"
                       >
-                        <MessageSquare className="w-4 h-4" />
+                        <MessageSquare className="w-3.5 h-3.5" />
                       </button>
                       {(isSM || isAdmin) && (
                         <select
                           value={lead.status}
                           onChange={(e) => handleUpdateStatus(lead.id, e.target.value)}
-                          className="text-[10px] font-bold bg-gray-900 text-white border-none rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-800 transition-all appearance-none ml-1 w-24 truncate"
+                          className="text-[9px] font-bold bg-gray-900 text-white border-none rounded-md px-1.5 py-1 cursor-pointer hover:bg-gray-800 transition-all appearance-none ml-0.5 w-[72px] truncate"
                         >
                           {settings.statuses.map((s: string) => (
                             <option key={s} value={s} className="bg-white text-gray-900">{s.replace(/_/g, ' ')}</option>
@@ -1879,7 +1879,7 @@ export default function LeadManagement() {
                 </div>
               ))
             ) : (
-              <div className="p-8 text-center text-gray-500 text-sm">
+              <div className="p-6 text-center text-gray-500 text-xs">
                 No leads match your criteria
               </div>
             )}
@@ -3327,24 +3327,35 @@ export default function LeadManagement() {
               className="bg-white w-full max-w-2xl h-full shadow-2xl flex flex-col"
             >
               {/* Header */}
-              <div className="p-6 border-b border-gray-100 flex justify-between items-start bg-gray-50/50 shrink-0">
-                <div>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-1">Lead Details</h2>
-                  <p className="text-sm text-gray-500">For: {selectedLead.customerName} ({selectedLead.enquiryId})</p>
+              <div className="p-4 md:p-6 border-b border-gray-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-gray-50/50 shrink-0">
+                <div className="flex justify-between items-start w-full md:w-auto">
+                  <div>
+                    <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-1">Lead Details</h2>
+                    <p className="text-xs md:text-sm text-gray-500 break-words pr-2">For: {selectedLead.customerName} ({selectedLead.enquiryId})</p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setSelectedLead(null);
+                      setFeedbackRecordingFile(null);
+                    }}
+                    className="md:hidden p-2 hover:bg-gray-200 rounded-full transition-colors bg-white border border-gray-200 shadow-sm shrink-0"
+                  >
+                    <X className="w-5 h-5 text-gray-500" />
+                  </button>
                 </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-1 bg-white p-1.5 rounded-xl border border-gray-200 shadow-sm mr-2">
+                <div className="flex flex-wrap items-center gap-2 md:gap-4 w-full md:w-auto">
+                  <div className="flex flex-wrap items-center gap-1 bg-white p-1 md:p-1.5 rounded-xl border border-gray-200 shadow-sm mr-0 md:mr-2">
                     <a href={`tel:${selectedLead.customerPhone}`} className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Call">
-                      <Phone className="w-5 h-5" />
+                      <Phone className="w-4 h-4 md:w-5 md:h-5" />
                     </a>
                     <a href={`sms:${selectedLead.customerPhone}`} className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="SMS">
-                      <MessageSquare className="w-5 h-5" />
+                      <MessageSquare className="w-4 h-4 md:w-5 md:h-5" />
                     </a>
                     <a href={`https://wa.me/${selectedLead.customerPhone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="p-2 text-gray-500 hover:text-green-500 hover:bg-green-50 rounded-lg transition-all" title="WhatsApp">
-                      <Send className="w-5 h-5" />
+                      <Send className="w-4 h-4 md:w-5 md:h-5" />
                     </a>
                     <a href={`mailto:${selectedLead.customerEmail}`} className="p-2 text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all" title="Email">
-                      <Mail className="w-5 h-5" />
+                      <Mail className="w-4 h-4 md:w-5 md:h-5" />
                     </a>
                   </div>
                   <button
@@ -3355,14 +3366,14 @@ export default function LeadManagement() {
                     className="p-2 text-gray-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all bg-white border border-gray-200 shadow-sm"
                     title="Edit Lead"
                   >
-                    <Edit2 className="w-5 h-5" />
+                    <Edit2 className="w-4 h-4 md:w-5 md:h-5" />
                   </button>
                   {(() => {
                     const { total } = calculateLeadScore(selectedLead);
                     return (
                       <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-gray-200 shadow-sm">
                         <span className="text-[10px] font-black text-gray-400 uppercase tracking-tighter">Score</span>
-                        <span className={`text-sm font-black ${
+                        <span className={`text-xs md:text-sm font-black ${
                           total > 70 ? 'text-green-600' : total > 40 ? 'text-blue-600' : 'text-orange-600'
                         }`}>{total}/100</span>
                       </div>
@@ -3373,7 +3384,7 @@ export default function LeadManagement() {
                       setSelectedLead(null);
                       setFeedbackRecordingFile(null);
                     }}
-                    className="p-2 hover:bg-gray-200 rounded-full transition-colors bg-white border border-gray-200 shadow-sm"
+                    className="hidden md:block p-2 hover:bg-gray-200 rounded-full transition-colors bg-white border border-gray-200 shadow-sm"
                   >
                     <X className="w-5 h-5 text-gray-500" />
                   </button>

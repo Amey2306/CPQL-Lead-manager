@@ -205,6 +205,7 @@ export async function chatWithGemini(messages: { role: string, content: string }
     const systemInstruction = `You are an AI Sales Assistant for CPQL Lead Manager. 
 Your role is to help Sales Managers (SMs) and Vendors manage their leads effectively.
 Current User Context: ${JSON.stringify(context.user)}
+${context.selectedLead ? `Currently Viewed Lead (The user is looking at this lead right now, so provide highly specific assistance if they ask about it): ${JSON.stringify(context.selectedLead)}` : ''}
 Available Leads Data: ${JSON.stringify(context.leads)}
 
 Guidelines:

@@ -4315,12 +4315,12 @@ export default function LeadManagement() {
       </AnimatePresence>
 
       {/* AI Chatbot */}
-      <Chatbot leads={leads} profile={profile} />
+      <Chatbot leads={leads} profile={profile} selectedLead={selectedLead} />
     </motion.div>
   );
 }
 
-function Chatbot({ leads, profile }: { leads: any[], profile: any }) {
+function Chatbot({ leads, profile, selectedLead }: { leads: any[], profile: any, selectedLead?: any }) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<{ role: string, content: string }[]>([
     { role: 'assistant', content: `Hello ${profile?.displayName}! I'm your AI Sales Assistant. How can I help you manage your leads today?` }
@@ -4345,7 +4345,7 @@ function Chatbot({ leads, profile }: { leads: any[], profile: any }) {
     setIsLoading(true);
 
     try {
-      const response = await chatWithGemini([...messages, userMessage], { user: profile, leads });
+      const response = await chatWithGemini([...messages, userMessage], { user: profile, leads, selectedLead });
       setMessages(prev => [...prev, { role: 'assistant', content: response }]);
     } catch (error) {
       console.error("Chat error:", error);

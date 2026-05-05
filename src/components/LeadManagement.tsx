@@ -146,6 +146,17 @@ export default function LeadManagement() {
   const [newTask, setNewTask] = useState({ title: '', dueDate: new Date().toISOString().split('T')[0], assignedTo: '' });
   const [bulkUploadProject, setBulkUploadProject] = useState('');
   const [bulkUploadVendor, setBulkUploadVendor] = useState('');
+  const [bulkStep, setBulkStep] = useState<'upload' | 'mapping'>('upload');
+  const [bulkRawData, setBulkRawData] = useState<any[]>([]);
+  const [bulkFileHeaders, setBulkFileHeaders] = useState<string[]>([]);
+  const [bulkFieldMapping, setBulkFieldMapping] = useState<Record<string, string>>({});
+  const [recordingPreviewUrl, setRecordingPreviewUrl] = useState<string | null>(null);
+  const [bgProcessing, setBgProcessing] = useState<{ total: number; done: number; active: boolean }>({ total: 0, done: 0, active: false });
+  const [singleRecordingLead, setSingleRecordingLead] = useState<any>(null);
+  const [singleRecordingFile, setSingleRecordingFile] = useState<File | null>(null);
+  const [singleRecordingUrl, setSingleRecordingUrl] = useState('');
+  const [singleRecordingPreview, setSingleRecordingPreview] = useState<string | null>(null);
+  const [isProcessingSingle, setIsProcessingSingle] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -419,26 +430,13 @@ export default function LeadManagement() {
     setIsAnalyzing(true);
     try {
       let analysis;
-      
+
       if (recordingFile) {
-        // Upload to storage first to get URL for the lead record
         const fileRef = ref(storage, `recordings/${Date.now()}_${recordingFile.name}`);
         await uploadBytes(fileRef, recordingFile);
-        const urlToAnalyze = await getDownloadURL(fileRef);
-        setter((prev: any) => ({ ...prev, callRecordingUrl: urlToAnalyze }));
-
-        // Convert file to base64 for Gemini analysis
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.readAsDataURL(recordingFile);
-          reader.onload = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1]); // Remove data:audio/mp3;base64,
-          };
-          reader.onerror = error => reject(error);
-        });
-        
-        analysis = await analyzeCallRecording(base64, recordingFile.type || 'audio/mp3');
+        const uploadedUrl = await getDownloadURL(fileRef);
+        setter((prev: any) => ({ ...prev, callRecordingUrl: uploadedUrl }));
+        analysis = await analyzeCallRecordingUrl(uploadedUrl);
       } else {
         analysis = await analyzeCallRecordingUrl(targetData.callRecordingUrl);
       }
@@ -622,9 +620,29 @@ export default function LeadManagement() {
         tags: [] 
       });
       setRecordingFile(null);
+      if (recordingPreviewUrl) { URL.revokeObjectURL(recordingPreviewUrl); setRecordingPreviewUrl(null); }
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'leads');
     }
+  };
+
+  const LEAD_FIELD_OPTIONS = [
+    { key: '', label: '-- Skip this column --' },
+    { key: 'enquiryId', label: 'Enquiry ID *' },
+    { key: 'projectId', label: 'Project (Name or ID)' },
+    { key: 'callRecordingUrl', label: 'Call Recording URL' },
+    { key: 'vendorNotes', label: 'Vendor Notes' },
+  ];
+
+  const autoMapHeaders = (headers: string[]): Record<string, string> => {
+    const mapping: Record<string, string> = {};
+    const normalize = (s: string) => s.toLowerCase().replace(/[\s_-]/g, '');
+    headers.forEach(h => {
+      const norm = normalize(h);
+      const match = LEAD_FIELD_OPTIONS.find(f => f.key && normalize(f.key) === norm);
+      mapping[h] = match ? match.key : '';
+    });
+    return mapping;
   };
 
   const handleBulkUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -634,10 +652,20 @@ export default function LeadManagement() {
     const reader = new FileReader();
     const extension = file.name.split('.').pop()?.toLowerCase();
 
+    const onParsed = (data: any[]) => {
+      if (!data.length) { showToast('File appears to be empty.', 'error'); return; }
+      const headers = Object.keys(data[0]);
+      setBulkRawData(data);
+      setBulkFileHeaders(headers);
+      setBulkFieldMapping(autoMapHeaders(headers));
+      setBulkStep('mapping');
+    };
+
     if (extension === 'csv') {
       Papa.parse(file, {
         header: true,
-        complete: (results) => processBulkData(results.data),
+        skipEmptyLines: true,
+        complete: (results) => onParsed(results.data as any[]),
         error: (error) => console.error('CSV Parse Error:', error)
       });
     } else if (extension === 'xlsx' || extension === 'xls') {
@@ -646,8 +674,8 @@ export default function LeadManagement() {
         const workbook = XLSX.read(data, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
-        processBulkData(jsonData);
+        const jsonData = XLSX.utils.sheet_to_json(worksheet) as any[];
+        onParsed(jsonData);
       };
       reader.readAsArrayBuffer(file);
     }
@@ -705,6 +733,135 @@ export default function LeadManagement() {
       await batch.commit();
       setIsBulkModalOpen(false);
       showToast('Bulk upload successful!', 'success');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'leads/bulk');
+    }
+  };
+
+  const processRecordingsInBackground = async (leads: { id: string; url: string }[]) => {
+    if (!leads.length) return;
+    setBgProcessing({ total: leads.length, done: 0, active: true });
+    for (let i = 0; i < leads.length; i++) {
+      try {
+        const analysis = await analyzeCallRecordingUrl(leads[i].url);
+        await updateDoc(doc(db, 'leads', leads[i].id), {
+          callAnalysis: analysis,
+          priority: analysis.priority || 'Medium',
+          tags: analysis.tags || [],
+          updatedAt: serverTimestamp()
+        });
+      } catch (e) {
+        console.error(`Failed to analyze recording for lead ${leads[i].id}`, e);
+      }
+      setBgProcessing(prev => ({ ...prev, done: i + 1 }));
+    }
+    setBgProcessing({ total: 0, done: 0, active: false });
+    showToast(`${leads.length} recording${leads.length > 1 ? 's' : ''} analyzed successfully!`, 'success');
+  };
+
+  const handleProcessSingleRecording = async () => {
+    if (!singleRecordingLead) return;
+    if (!singleRecordingFile && !singleRecordingUrl) {
+      showToast('Upload a file or paste a URL first.', 'error');
+      return;
+    }
+    setIsProcessingSingle(true);
+    try {
+      let analysis;
+      let finalRecordingUrl = singleRecordingUrl || singleRecordingLead.callRecordingUrl || '';
+      if (singleRecordingFile) {
+        const fileRef = ref(storage, `recordings/${Date.now()}_${singleRecordingFile.name}`);
+        await uploadBytes(fileRef, singleRecordingFile);
+        finalRecordingUrl = await getDownloadURL(fileRef);
+        analysis = await analyzeCallRecordingUrl(finalRecordingUrl);
+      } else {
+        analysis = await analyzeCallRecordingUrl(singleRecordingUrl);
+      }
+      await updateDoc(doc(db, 'leads', singleRecordingLead.id), {
+        callRecordingUrl: finalRecordingUrl,
+        callAnalysis: analysis,
+        priority: analysis.priority || singleRecordingLead.priority,
+        tags: [...new Set([...(singleRecordingLead.tags || []), ...(analysis.tags || [])])],
+        updatedAt: serverTimestamp()
+      });
+      showToast('Recording processed and lead updated!', 'success');
+      setSingleRecordingLead(null);
+      setSingleRecordingFile(null);
+      setSingleRecordingUrl('');
+      if (singleRecordingPreview) { URL.revokeObjectURL(singleRecordingPreview); setSingleRecordingPreview(null); }
+    } catch (e) {
+      console.error('Single recording error', e);
+      showToast('Failed to process recording.', 'error');
+    } finally {
+      setIsProcessingSingle(false);
+    }
+  };
+
+  const processBulkDataWithMapping = async () => {
+    if (!profile) return;
+    const enquiryCol = Object.entries(bulkFieldMapping).find(([, v]) => v === 'enquiryId')?.[0];
+    if (!enquiryCol) {
+      showToast('Please map a column to Enquiry ID before proceeding.', 'error');
+      return;
+    }
+    const hasProjectCol = Object.values(bulkFieldMapping).includes('projectId');
+    if (!hasProjectCol && !bulkUploadProject) {
+      showToast('Map a Project ID column or select a project fallback.', 'error');
+      return;
+    }
+
+    const get = (row: any, fieldKey: string) => {
+      const col = Object.entries(bulkFieldMapping).find(([, v]) => v === fieldKey)?.[0];
+      return col ? row[col] : undefined;
+    };
+
+    const batch = writeBatch(db);
+    const leadsRef = collection(db, 'leads');
+    const recordingsToProcess: { id: string; url: string }[] = [];
+
+    bulkRawData.forEach((row) => {
+      const enquiryId = String(get(row, 'enquiryId') || '').trim();
+      if (!enquiryId) return;
+      const rawProject = String(get(row, 'projectId') || '').trim();
+      const resolvedProject = rawProject
+        ? (projects.find(p => p.id === rawProject) ?? projects.find(p => p.name.toLowerCase() === rawProject.toLowerCase()))
+        : null;
+      const projectId = resolvedProject?.id || bulkUploadProject;
+      if (!projectId) return;
+      const recordingUrl = String(get(row, 'callRecordingUrl') || '').trim();
+
+      const newDocRef = doc(leadsRef);
+      batch.set(newDocRef, {
+        enquiryId,
+        projectId,
+        customerName: '', customerPhone: '', customerEmail: '',
+        livingLocation: '', gender: '', companyName: '',
+        profession: '', designation: '', linkedinProfile: '',
+        clientType: 'end_user', budget: 0, possession: '',
+        priority: 'Medium', status: 'new',
+        vendorNotes: String(get(row, 'vendorNotes') || ''),
+        callRecordingUrl: recordingUrl,
+        callAnalysis: null, tags: [],
+        partnerId: profile.vendorCompanyId || profile.uid,
+        partnerName: profile.displayName,
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        partnerFeedback: [],
+        statusHistory: [{ status: 'new', notes: 'Bulk uploaded', updatedAt: new Date(), updatedBy: profile.displayName }]
+      });
+      if (recordingUrl) recordingsToProcess.push({ id: newDocRef.id, url: recordingUrl });
+    });
+
+    try {
+      await batch.commit();
+      setIsBulkModalOpen(false);
+      setBulkStep('upload');
+      setBulkRawData([]);
+      setBulkFileHeaders([]);
+      setBulkFieldMapping({});
+      setBulkUploadProject('');
+      const count = bulkRawData.filter(r => String(get(r, 'enquiryId') || '').trim()).length;
+      showToast(`${count} leads uploaded!${recordingsToProcess.length ? ` Analyzing ${recordingsToProcess.length} recordings in background…` : ''}`, 'success');
+      if (recordingsToProcess.length) processRecordingsInBackground(recordingsToProcess);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'leads/bulk');
     }
@@ -1084,18 +1241,8 @@ export default function LeadManagement() {
         const snapshot = await uploadBytes(storageRef, feedbackRecordingFile);
         recordingUrl = await getDownloadURL(snapshot.ref);
 
-        // Analyze feedback recording if possible
         try {
-          const base64 = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.readAsDataURL(feedbackRecordingFile);
-            reader.onload = () => {
-              const result = reader.result as string;
-              resolve(result.split(',')[1]);
-            };
-            reader.onerror = error => reject(error);
-          });
-          analysis = await analyzeCallRecording(base64, feedbackRecordingFile.type || 'audio/mp3');
+          analysis = await analyzeCallRecordingUrl(recordingUrl);
         } catch (err) {
           console.error("Feedback recording analysis failed", err);
         }
@@ -1322,11 +1469,29 @@ export default function LeadManagement() {
   const pendingLeadsCount = leads.filter(l => l.smId === profile.uid && l.status === 'new').length;
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="space-y-6 md:space-y-8"
     >
+      {/* Background recording analysis banner */}
+      <AnimatePresence>
+        {bgProcessing.active && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="fixed top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-3 px-5 py-3 bg-gray-900 text-white rounded-2xl shadow-2xl text-sm font-semibold"
+          >
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+            Analyzing recordings… {bgProcessing.done}/{bgProcessing.total}
+            <div className="w-24 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div className="h-full bg-indigo-400 rounded-full transition-all duration-300" style={{ width: `${(bgProcessing.done / bgProcessing.total) * 100}%` }} />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-3 md:gap-4">
         <div>
           <h1 className="text-xl md:text-3xl font-bold text-gray-900 tracking-tight">Lead Management</h1>
@@ -2101,7 +2266,14 @@ export default function LeadManagement() {
                           <Mail className="w-4 h-4" />
                         </a>
                       </div>
-                      <button 
+                      <button
+                        onClick={() => { setSingleRecordingLead(lead); setSingleRecordingUrl(lead.callRecordingUrl || ''); }}
+                        className={`p-2 rounded-lg transition-all ${lead.callAnalysis ? 'bg-green-50 text-green-600 hover:bg-green-100' : 'bg-gray-50 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50'}`}
+                        title={lead.callAnalysis ? 'Recording analyzed — reprocess?' : 'Upload & process recording'}
+                      >
+                        <Mic className="w-5 h-5" />
+                      </button>
+                      <button
                         onClick={() => setSelectedLead(lead)}
                         className="p-2 bg-gray-50 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all"
                         title="View Feedback & Notes"
@@ -2387,15 +2559,24 @@ export default function LeadManagement() {
                         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Upload New Recording</label>
                         <input
                           type="file"
-                          accept="audio/mp3,audio/wav"
+                          accept="audio/*"
                           onChange={(e) => {
                             if (e.target.files?.[0]) {
-                              setRecordingFile(e.target.files[0]);
+                              const f = e.target.files[0];
+                              setRecordingFile(f);
                               setEditLeadData({ ...editLeadData, callRecordingUrl: '' });
+                              if (recordingPreviewUrl) URL.revokeObjectURL(recordingPreviewUrl);
+                              setRecordingPreviewUrl(URL.createObjectURL(f));
                             }
                           }}
                           className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gray-900 file:text-white hover:file:bg-gray-800"
                         />
+                        {recordingFile && recordingPreviewUrl && (
+                          <div className="mt-2 p-3 bg-white rounded-xl border border-gray-200">
+                            <p className="text-xs text-gray-500 mb-1 font-semibold truncate">{recordingFile.name}</p>
+                            <audio controls src={recordingPreviewUrl} className="w-full h-9 focus:outline-none" />
+                          </div>
+                        )}
                       </div>
                       <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Recording URL</label>
@@ -2406,9 +2587,15 @@ export default function LeadManagement() {
                           onChange={(e) => {
                             setEditLeadData({ ...editLeadData, callRecordingUrl: e.target.value });
                             setRecordingFile(null);
+                            if (recordingPreviewUrl) { URL.revokeObjectURL(recordingPreviewUrl); setRecordingPreviewUrl(null); }
                           }}
                           className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none text-sm"
                         />
+                        {editLeadData.callRecordingUrl && !recordingFile && (
+                          <div className="mt-2">
+                            <audio controls src={editLeadData.callRecordingUrl} className="w-full h-9 focus:outline-none" />
+                          </div>
+                        )}
                       </div>
                     </div>
                     
@@ -2758,91 +2945,218 @@ export default function LeadManagement() {
       {/* Bulk Upload Modal */}
       <AnimatePresence>
         {isBulkModalOpen && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl max-w-md w-full p-8 shadow-2xl"
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 8 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 8 }}
+              transition={{ duration: 0.18 }}
+              className={`bg-white rounded-2xl shadow-2xl w-full ${bulkStep === 'mapping' ? 'max-w-2xl' : 'max-w-lg'} max-h-[92vh] overflow-y-auto`}
             >
-            <h2 className="text-2xl font-bold text-gray-900 mb-4">Bulk Upload Leads</h2>
-            
-            <div className="space-y-4 mb-6">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Select Project</label>
-                <select
-                  value={bulkUploadProject}
-                  onChange={(e) => setBulkUploadProject(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
-                >
-                  <option value="">Select a project...</option>
-                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+              {/* Header */}
+              <div className="flex items-center justify-between px-7 pt-7 pb-5 border-b border-gray-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-gray-900 flex items-center justify-center">
+                    <FileSpreadsheet className="w-4 h-4 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-black text-gray-900">Bulk Upload Leads</h2>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {bulkStep === 'upload' ? 'Upload your file to get started' : `${bulkRawData.length} rows found — tell us which columns to use`}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={() => { setIsBulkModalOpen(false); setBulkStep('upload'); setBulkRawData([]); setBulkFileHeaders([]); setBulkFieldMapping({}); }} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors">
+                  <X className="w-4 h-4 text-gray-500" />
+                </button>
               </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Select Vendor (Optional)</label>
-                <select
-                  value={bulkUploadVendor}
-                  onChange={(e) => setBulkUploadVendor(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-gray-900 transition-all"
-                >
-                  <option value="">Default (Current User)</option>
-                  {partners.map(p => <option key={p.uid} value={p.uid}>{p.companyName || p.displayName}</option>)}
-                </select>
+
+              {/* Step pills */}
+              <div className="flex items-center gap-2 px-7 py-3 bg-gray-50 border-b border-gray-100">
+                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all ${bulkStep === 'upload' ? 'bg-gray-900 text-white' : 'bg-green-100 text-green-700'}`}>
+                  {bulkStep !== 'upload' ? <Check className="w-3 h-3" /> : <span>1</span>}
+                  Choose File
+                </div>
+                <ChevronDown className="w-3 h-3 text-gray-300 rotate-[-90deg]" />
+                <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all ${bulkStep === 'mapping' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-400'}`}>
+                  <span>2</span>
+                  Map Columns
+                </div>
               </div>
-            </div>
 
-            <p className="text-sm text-gray-500 mb-6">
-              Upload a CSV or Excel file with columns: <br/>
-              <code className="bg-gray-100 px-1 rounded text-[10px]">enquiryId, customerName, customerPhone, budget, possession, vendorNotes, callRecordingUrl</code>
-            </p>
-            
-            <div className="mb-6 flex justify-end">
-              <button
-                onClick={() => {
-                  const csvContent = "data:text/csv;charset=utf-8,enquiryId,customerName,customerPhone,budget,possession,vendorNotes,callRecordingUrl\n123,John Doe,1234567890,1000000,immediate,Looking for 2BHK,https://example.com/recording.mp3";
-                  const encodedUri = encodeURI(csvContent);
-                  const link = document.createElement("a");
-                  link.setAttribute("href", encodedUri);
-                  link.setAttribute("download", "sample_leads.csv");
-                  document.body.appendChild(link);
-                  link.click();
-                  document.body.removeChild(link);
-                }}
-                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-                Download Sample CSV
-              </button>
-            </div>
+              <div className="px-7 py-6">
+                {bulkStep === 'upload' && (
+                  <div className="space-y-5">
+                    {/* What happens */}
+                    <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
+                      <div className="text-2xl mt-0.5">🎙️</div>
+                      <div>
+                        <p className="text-sm font-bold text-gray-800">Upload your file — recordings are processed automatically</p>
+                        <p className="text-xs text-gray-500 mt-1">Just map your columns in the next step. Project comes from your file's data. Recordings are analyzed by AI in the background after upload.</p>
+                      </div>
+                    </div>
 
-            <div 
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-gray-200 rounded-xl p-10 text-center cursor-pointer hover:border-gray-900 transition-colors group"
-            >
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                className="hidden" 
-                accept=".csv,.xlsx,.xls" 
-                onChange={handleBulkUpload}
-              />
-              <div className="w-12 h-12 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:bg-gray-100">
-                <Upload className="w-6 h-6 text-gray-400 group-hover:text-gray-900" />
+                    {/* Drop zone — always active */}
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      className="cursor-pointer border-2 border-dashed border-gray-200 rounded-2xl p-10 text-center hover:border-gray-900 hover:bg-gray-50 transition-all group"
+                    >
+                      <input type="file" ref={fileInputRef} className="hidden" accept=".csv,.xlsx,.xls" onChange={handleBulkUpload} />
+                      <div className="w-14 h-14 bg-white border border-gray-200 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm group-hover:shadow-md transition-shadow">
+                        <Upload className="w-6 h-6 text-gray-400 group-hover:text-gray-700 transition-colors" />
+                      </div>
+                      <p className="text-sm font-bold text-gray-900">Click to choose your file</p>
+                      <p className="text-xs text-gray-400 mt-1">CSV · XLSX · XLS</p>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const csv = "data:text/csv;charset=utf-8,enquiryId,projectId,callRecordingUrl,vendorNotes\nENQ001,proj_abc123,https://example.com/rec1.mp3,Interested in 2BHK\nENQ002,proj_abc123,https://example.com/rec2.mp3,Budget around 80L";
+                        const link = document.createElement("a");
+                        link.setAttribute("href", encodeURI(csv));
+                        link.setAttribute("download", "sample_leads.csv");
+                        document.body.appendChild(link); link.click(); document.body.removeChild(link);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 border border-dashed border-gray-200 rounded-xl text-xs font-bold text-gray-500 hover:text-gray-900 hover:border-gray-400 transition-all"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      Download sample CSV template
+                    </button>
+                  </div>
+                )}
+
+                {bulkStep === 'mapping' && (() => {
+                  const hasProjectCol = Object.values(bulkFieldMapping).includes('projectId');
+                  const enquiryMapped = Object.values(bulkFieldMapping).includes('enquiryId');
+                  const recordingMapped = Object.values(bulkFieldMapping).includes('callRecordingUrl');
+                  const recordingCount = recordingMapped
+                    ? bulkRawData.filter(r => {
+                        const col = Object.entries(bulkFieldMapping).find(([, v]) => v === 'callRecordingUrl')?.[0];
+                        return col && String(r[col] || '').trim();
+                      }).length
+                    : 0;
+
+                  return (
+                    <div className="space-y-5">
+                      <div className="space-y-3">
+                        <p className="text-xs font-black text-gray-400 uppercase tracking-wide">Match your file columns to fields</p>
+
+                        {[
+                          { key: 'enquiryId', label: 'Enquiry ID', desc: 'Unique ID for each lead', required: true },
+                          { key: 'projectId', label: 'Project', desc: 'Project name or ID — either works', required: true },
+                          { key: 'callRecordingUrl', label: 'Call Recording URL', desc: 'AI will analyze these automatically after upload', required: false },
+                          { key: 'vendorNotes', label: 'Vendor Notes', desc: 'Any notes about the lead', required: false },
+                        ].map(field => {
+                          const mappedCol = Object.entries(bulkFieldMapping).find(([, v]) => v === field.key)?.[0] ?? '';
+                          const sampleVal = mappedCol ? String(bulkRawData[0]?.[mappedCol] ?? '') : '';
+                          const isMapped = !!mappedCol;
+                          return (
+                            <div key={field.key} className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all ${isMapped ? 'border-gray-300 bg-white' : field.required ? 'border-orange-200 bg-orange-50/60' : 'border-gray-200 bg-gray-50'}`}>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-bold text-gray-900">{field.label}</span>
+                                  {field.required && !isMapped && <span className="text-[10px] font-black text-orange-500 uppercase">required</span>}
+                                  {isMapped && <Check className="w-3 h-3 text-green-500" />}
+                                </div>
+                                {isMapped && sampleVal
+                                  ? <p className="text-xs text-indigo-500 mt-0.5 truncate font-medium">"{sampleVal}"</p>
+                                  : <p className="text-xs text-gray-400 mt-0.5">{field.desc}</p>
+                                }
+                              </div>
+                              <select
+                                value={mappedCol}
+                                onChange={(e) => {
+                                  const m = { ...bulkFieldMapping };
+                                  Object.keys(m).forEach(k => { if (m[k] === field.key) m[k] = ''; });
+                                  if (e.target.value) m[e.target.value] = field.key;
+                                  setBulkFieldMapping(m);
+                                }}
+                                className={`shrink-0 w-40 px-3 py-2 border rounded-xl text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-400 transition-all ${isMapped ? 'border-gray-300 bg-white text-gray-900' : 'border-gray-200 bg-white text-gray-400'}`}
+                              >
+                                <option value="">— not in file —</option>
+                                {bulkFileHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Project fallback if not in file */}
+                      {!hasProjectCol && (
+                        <div className="p-4 bg-orange-50 border border-orange-200 rounded-xl">
+                          <p className="text-xs font-bold text-orange-700 mb-2">No Project ID column mapped — select a fallback project</p>
+                          <select
+                            value={bulkUploadProject}
+                            onChange={(e) => setBulkUploadProject(e.target.value)}
+                            className="w-full px-3 py-2.5 border border-orange-300 bg-white rounded-xl text-sm outline-none focus:ring-2 focus:ring-orange-400 transition-all"
+                          >
+                            <option value="">Select project...</option>
+                            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
+                        </div>
+                      )}
+
+                      {/* Summary */}
+                      {enquiryMapped && (hasProjectCol || bulkUploadProject) && (
+                        <div className="flex items-center gap-2 p-3 bg-gray-900 rounded-xl text-white text-xs">
+                          <CheckCircle className="w-4 h-4 text-green-400 shrink-0" />
+                          <span>
+                            Ready to upload <span className="font-bold">{bulkRawData.length} leads</span>
+                            {recordingCount > 0 && <> — <span className="font-bold text-indigo-300">{recordingCount} recording{recordingCount > 1 ? 's' : ''} will be analyzed in background</span></>}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Data preview */}
+                      {enquiryMapped && (() => {
+                        const mappedHeaders = bulkFileHeaders.filter(h => bulkFieldMapping[h]);
+                        if (!mappedHeaders.length) return null;
+                        return (
+                          <div>
+                            <p className="text-xs font-black text-gray-400 uppercase tracking-wide mb-2">Preview</p>
+                            <div className="overflow-x-auto rounded-xl border border-gray-200">
+                              <table className="min-w-full text-xs">
+                                <thead>
+                                  <tr className="bg-gray-100">
+                                    {mappedHeaders.map(h => (
+                                      <th key={h} className="px-3 py-2 text-left text-gray-600 font-bold whitespace-nowrap">
+                                        {LEAD_FIELD_OPTIONS.find(o => o.key === bulkFieldMapping[h])?.label || bulkFieldMapping[h]}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {bulkRawData.slice(0, 3).map((row, i) => (
+                                    <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                                      {mappedHeaders.map(h => (
+                                        <td key={h} className="px-3 py-2 text-gray-600 max-w-[180px] truncate">{String(row[h] ?? '—')}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            {bulkRawData.length > 3 && <p className="text-xs text-gray-400 mt-1.5 text-center">+ {bulkRawData.length - 3} more rows</p>}
+                          </div>
+                        );
+                      })()}
+
+                      <div className="flex gap-3">
+                        <button type="button" onClick={() => { setBulkStep('upload'); setBulkRawData([]); setBulkFileHeaders([]); setBulkFieldMapping({}); }}
+                          className="flex items-center gap-1.5 px-4 py-2.5 border border-gray-200 text-gray-600 rounded-xl font-bold hover:bg-gray-50 text-sm transition-all">
+                          <ChevronDown className="w-4 h-4 rotate-90" /> Back
+                        </button>
+                        <button type="button" onClick={processBulkDataWithMapping}
+                          disabled={!enquiryMapped || (!hasProjectCol && !bulkUploadProject)}
+                          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-900 text-white rounded-xl font-bold hover:bg-gray-800 text-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+                          <Upload className="w-4 h-4" />
+                          Upload {bulkRawData.length} Leads
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
-              <p className="text-sm font-bold text-gray-900">Click to upload file</p>
-              <p className="text-xs text-gray-500 mt-1">CSV, XLSX or XLS (Max 5MB)</p>
-            </div>
-
-            <div className="flex gap-4 mt-8">
-              <button
-                type="button"
-                onClick={() => setIsBulkModalOpen(false)}
-                className="flex-1 px-4 py-2 border border-gray-200 text-gray-600 rounded-lg font-bold hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-            </div>
             </motion.div>
           </div>
         )}
@@ -3098,78 +3412,96 @@ export default function LeadManagement() {
                   placeholder="Add tag (e.g. budget-conscious) and press Enter"
                 />
               </div>
-              <div className="col-span-2 bg-gray-50 p-4 rounded-xl border border-gray-200">
-                <label className="block text-sm font-bold text-gray-900 mb-2">Call Recording (Optional)</label>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Upload File (MP3/WAV)</label>
-                    <input
-                      type="file"
-                      accept="audio/mp3,audio/wav"
-                      onChange={(e) => {
-                        if (e.target.files?.[0]) {
-                          setRecordingFile(e.target.files[0]);
-                          setNewLead({ ...newLead, callRecordingUrl: '' });
-                        }
-                      }}
-                      className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gray-900 file:text-white hover:file:bg-gray-800"
-                    />
+              <div className="col-span-2">
+                <div className="border border-gray-200 rounded-2xl overflow-hidden">
+                  <div className="flex items-center gap-2 px-4 py-3 bg-gray-50 border-b border-gray-200">
+                    <Mic className="w-4 h-4 text-gray-500" />
+                    <span className="text-sm font-bold text-gray-700">Call Recording</span>
+                    <span className="ml-auto text-xs text-gray-400 font-medium">Optional</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="h-px bg-gray-200 flex-1"></div>
-                    <span className="text-xs text-gray-400 font-bold uppercase">OR</span>
-                    <div className="h-px bg-gray-200 flex-1"></div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Cloud URL</label>
-                    <input
-                      type="url"
-                      placeholder="https://..."
-                      value={newLead.callRecordingUrl}
-                      onChange={(e) => {
-                        setNewLead({ ...newLead, callRecordingUrl: e.target.value });
-                        setRecordingFile(null);
-                      }}
-                      className="w-full px-4 py-2 bg-white border border-gray-200 rounded-lg focus:ring-2 focus:ring-gray-900 outline-none text-sm"
-                    />
-                  </div>
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      onClick={() => handleAnalyzeRecording('new')}
-                      disabled={isAnalyzing || (!newLead.callRecordingUrl && !recordingFile)}
-                      className="w-full py-2 bg-blue-50 text-blue-600 font-bold rounded-lg text-sm hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                    >
-                      {isAnalyzing ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                          Analyzing Recording...
-                        </>
-                      ) : (
-                        'Analyze Recording'
-                      )}
-                    </button>
-                  </div>
-                  
-                  {newLead.callAnalysis && (
-                    <div className="mt-4 p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
-                      <h4 className="text-sm font-bold text-gray-900 mb-2">Analysis Results</h4>
-                      <div className="space-y-2 text-sm">
-                        <p><span className="font-bold text-gray-700">Priority:</span> <span className={`font-bold ${newLead.callAnalysis.priority === 'High' ? 'text-red-600' : newLead.callAnalysis.priority === 'Medium' ? 'text-orange-500' : 'text-blue-500'}`}>{newLead.callAnalysis.priority}</span></p>
-                        <p><span className="font-bold text-gray-700">Suggested Score:</span> {newLead.callAnalysis.suggestedScore}</p>
-                        <p><span className="font-bold text-gray-700">Summary:</span> {newLead.callAnalysis.summary}</p>
-                        {newLead.callAnalysis.keyTakeaways && (
-                          <p><span className="font-bold text-gray-700">Takeaways:</span> {newLead.callAnalysis.keyTakeaways}</p>
-                        )}
-                        <div>
-                          <span className="font-bold text-gray-700">Pain Points:</span>
-                          <ul className="list-disc pl-5 mt-1 text-gray-600">
-                            {newLead.callAnalysis.painPoints?.map((pt: string, i: number) => <li key={i}>{pt}</li>)}
-                          </ul>
+                  <div className="p-4 space-y-3">
+                    {/* File upload zone */}
+                    {!recordingFile && !newLead.callRecordingUrl && (
+                      <label className="flex flex-col items-center gap-2 p-5 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-gray-400 hover:bg-gray-50 transition-all group">
+                        <input type="file" accept="audio/*" className="hidden" onChange={(e) => {
+                          if (e.target.files?.[0]) {
+                            const f = e.target.files[0];
+                            setRecordingFile(f);
+                            setNewLead({ ...newLead, callRecordingUrl: '' });
+                            if (recordingPreviewUrl) URL.revokeObjectURL(recordingPreviewUrl);
+                            setRecordingPreviewUrl(URL.createObjectURL(f));
+                          }
+                        }} />
+                        <div className="w-10 h-10 bg-white border border-gray-200 rounded-xl flex items-center justify-center shadow-sm group-hover:shadow transition-shadow">
+                          <Upload className="w-4 h-4 text-gray-400 group-hover:text-gray-700" />
                         </div>
+                        <div className="text-center">
+                          <p className="text-xs font-bold text-gray-700">Upload audio file</p>
+                          <p className="text-[11px] text-gray-400 mt-0.5">MP3, WAV, WEBM — or paste a URL below</p>
+                        </div>
+                      </label>
+                    )}
+
+                    {/* File preview */}
+                    {recordingFile && recordingPreviewUrl && (
+                      <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
+                        <div className="w-8 h-8 bg-gray-900 rounded-lg flex items-center justify-center shrink-0">
+                          <Mic className="w-4 h-4 text-white" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-bold text-gray-800 truncate">{recordingFile.name}</p>
+                          <audio controls src={recordingPreviewUrl} className="w-full h-7 mt-1 focus:outline-none" />
+                        </div>
+                        <button type="button" onClick={() => { setRecordingFile(null); if (recordingPreviewUrl) { URL.revokeObjectURL(recordingPreviewUrl); setRecordingPreviewUrl(null); } }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-gray-200 transition-colors shrink-0">
+                          <X className="w-3 h-3 text-gray-500" />
+                        </button>
                       </div>
-                    </div>
-                  )}
+                    )}
+
+                    {/* URL input */}
+                    {!recordingFile && (
+                      <div className="relative">
+                        <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                        <input
+                          type="url"
+                          placeholder="Or paste cloud URL (https://...)"
+                          value={newLead.callRecordingUrl}
+                          onChange={(e) => {
+                            setNewLead({ ...newLead, callRecordingUrl: e.target.value });
+                            if (recordingPreviewUrl) { URL.revokeObjectURL(recordingPreviewUrl); setRecordingPreviewUrl(null); }
+                          }}
+                          className="w-full pl-8 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-gray-900 outline-none transition-all"
+                        />
+                      </div>
+                    )}
+                    {newLead.callRecordingUrl && !recordingFile && (
+                      <audio controls src={newLead.callRecordingUrl} className="w-full h-8 focus:outline-none" />
+                    )}
+
+                    {/* Analyze button */}
+                    {(recordingFile || newLead.callRecordingUrl) && (
+                      <button
+                        type="button"
+                        onClick={() => handleAnalyzeRecording('new')}
+                        disabled={isAnalyzing}
+                        className="w-full py-2.5 bg-indigo-600 text-white font-bold rounded-xl text-sm hover:bg-indigo-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      >
+                        {isAnalyzing ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Analyzing...</> : <><Bot className="w-4 h-4" />Analyze with AI</>}
+                      </button>
+                    )}
+
+                    {/* Analysis result */}
+                    {newLead.callAnalysis && (
+                      <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl space-y-1.5 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-indigo-700 uppercase">AI Analysis</span>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${newLead.callAnalysis.priority === 'High' ? 'bg-red-100 text-red-600' : newLead.callAnalysis.priority === 'Medium' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>{newLead.callAnalysis.priority} Priority</span>
+                        </div>
+                        <p className="text-xs text-gray-700"><span className="font-bold">Summary:</span> {newLead.callAnalysis.summary}</p>
+                        {newLead.callAnalysis.suggestedScore && <p className="text-xs text-gray-600">Score: <span className="font-bold">{newLead.callAnalysis.suggestedScore}/100</span></p>}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="col-span-2 flex gap-4 mt-8">
@@ -4308,6 +4640,120 @@ export default function LeadManagement() {
                     ))}
                   </div>
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Single Recording Modal */}
+      <AnimatePresence>
+        {singleRecordingLead && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 8 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0, y: 8 }}
+              transition={{ duration: 0.16 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center">
+                    <Mic className="w-4 h-4 text-white" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-400 font-medium">{singleRecordingLead.enquiryId}</p>
+                    <h3 className="text-sm font-black text-gray-900">{singleRecordingLead.customerName || 'Unnamed Lead'}</h3>
+                  </div>
+                </div>
+                <button onClick={() => { setSingleRecordingLead(null); setSingleRecordingFile(null); setSingleRecordingUrl(''); if (singleRecordingPreview) { URL.revokeObjectURL(singleRecordingPreview); setSingleRecordingPreview(null); } }} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors">
+                  <X className="w-4 h-4 text-gray-500" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                {/* Already analyzed badge */}
+                {singleRecordingLead.callAnalysis && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-xl text-xs font-bold text-green-700">
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    Already analyzed — upload a new recording to reprocess
+                  </div>
+                )}
+
+                {/* File drop zone */}
+                {!singleRecordingFile ? (
+                  <label className="flex flex-col items-center gap-3 p-6 border-2 border-dashed border-gray-200 rounded-2xl cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-all group">
+                    <input type="file" accept="audio/*" className="hidden" onChange={(e) => {
+                      if (e.target.files?.[0]) {
+                        const f = e.target.files[0];
+                        setSingleRecordingFile(f);
+                        setSingleRecordingUrl('');
+                        if (singleRecordingPreview) URL.revokeObjectURL(singleRecordingPreview);
+                        setSingleRecordingPreview(URL.createObjectURL(f));
+                      }
+                    }} />
+                    <div className="w-12 h-12 bg-white border border-gray-200 rounded-xl flex items-center justify-center shadow-sm group-hover:border-indigo-300 transition-colors">
+                      <Upload className="w-5 h-5 text-gray-400 group-hover:text-indigo-500" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-bold text-gray-700 group-hover:text-indigo-700">Click to upload recording</p>
+                      <p className="text-xs text-gray-400 mt-0.5">MP3, WAV, WEBM, M4A…</p>
+                    </div>
+                  </label>
+                ) : (
+                  <div className="flex items-center gap-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl">
+                    <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0">
+                      <Mic className="w-4 h-4 text-white" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-gray-800 truncate">{singleRecordingFile.name}</p>
+                      <audio controls src={singleRecordingPreview || ''} className="w-full h-7 mt-1" />
+                    </div>
+                    <button type="button" onClick={() => { setSingleRecordingFile(null); if (singleRecordingPreview) { URL.revokeObjectURL(singleRecordingPreview); setSingleRecordingPreview(null); } }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-indigo-200 transition-colors shrink-0">
+                      <X className="w-3 h-3 text-indigo-600" />
+                    </button>
+                  </div>
+                )}
+
+                {/* OR URL */}
+                {!singleRecordingFile && (
+                  <div className="relative">
+                    <Link className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                    <input
+                      type="url"
+                      placeholder="Or paste a recording URL (https://...)"
+                      value={singleRecordingUrl}
+                      onChange={(e) => setSingleRecordingUrl(e.target.value)}
+                      className="w-full pl-8 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-400 outline-none transition-all"
+                    />
+                    {singleRecordingUrl && (
+                      <audio controls src={singleRecordingUrl} className="w-full h-8 mt-2" />
+                    )}
+                  </div>
+                )}
+
+                {/* What AI will do */}
+                {(singleRecordingFile || singleRecordingUrl) && !isProcessingSingle && (
+                  <div className="flex items-start gap-2 p-3 bg-gray-50 rounded-xl border border-gray-200 text-xs text-gray-600">
+                    <Bot className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                    <span>AI will transcribe the call, determine priority, extract pain points, and update this lead automatically.</span>
+                  </div>
+                )}
+
+                {/* CTA */}
+                <button
+                  onClick={handleProcessSingleRecording}
+                  disabled={isProcessingSingle || (!singleRecordingFile && !singleRecordingUrl)}
+                  className="w-full flex items-center justify-center gap-2 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isProcessingSingle ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Processing…</>
+                  ) : (
+                    <><Bot className="w-4 h-4" />Process Recording</>
+                  )}
+                </button>
               </div>
             </motion.div>
           </div>

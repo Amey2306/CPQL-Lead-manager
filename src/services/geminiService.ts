@@ -3,6 +3,10 @@ import { GoogleGenAI } from '@google/genai';
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function analyzeCallRecording(audioBase64: string, mimeType: string) {
+  const audioMime = mimeType === 'video/mp4' || mimeType === 'video/quicktime'
+    ? 'audio/mp4'
+    : mimeType.startsWith('audio/') ? mimeType : 'audio/mp4';
+
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3.1-pro-preview', // High-capability model for deep strategic analysis
@@ -13,7 +17,7 @@ export async function analyzeCallRecording(audioBase64: string, mimeType: string
             {
               inlineData: {
                 data: audioBase64,
-                mimeType: mimeType
+                mimeType: audioMime
               }
             },
             {
